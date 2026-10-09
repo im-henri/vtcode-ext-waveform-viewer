@@ -1,0 +1,7 @@
+/target/
+/screenshots/
+*.tmp
+.vtcode/
+/waveform-session.json
+__pycache__/
+*.py[cod]

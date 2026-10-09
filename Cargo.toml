@@ -1,0 +1,29 @@
+[package]
+name = "vtcode-waveform-viewer"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+description = "A native waveform explorer for VTCode"
+repository = "https://github.com/im-henri/vtcode-ext-waveform-viewer"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+vtcode-extension-api = { path = "vendor/vtcode-extension-api" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+unicode-width = "0.2"
+fst-reader = "0.17"
+miniz_oxide = "0.9"
+crc32fast = "1.5"
+
+[dev-dependencies]
+crossterm = "0.29"
+
+[profile.release]
+opt-level = 2
+lto = true
+strip = true
+panic = "abort"
