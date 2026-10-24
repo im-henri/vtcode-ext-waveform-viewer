@@ -5,3 +5,4 @@
 /waveform-session.json
 __pycache__/
 *.py[cod]
+/dist/

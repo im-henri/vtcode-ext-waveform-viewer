@@ -5,59 +5,67 @@ API version `2` adds custom file editors to the existing commands, views,
 overlays, settings, diagnostics, and text-edit APIs. API version `1` remains
 accepted by the host. This SDK exposes `API_VERSION = "2"`.
 
-## Source-backed packages
+## Tagged runtime packages
 
-Every `extension.json` must declare a hosted Git `repository`, as well as its
-`id`, `name`, `version`, `apiVersion`, and Wasm `main` (or LSP configuration).
-Repository metadata is required for locally discovered extensions too. Existing
-manifests must add it before they can load.
+Each extension has a GitHub repository and versioned GitHub releases.
+Users choose **Extensions: Install Extension from GitHub**, paste the repository
+link, then select a published version. `#tag=v1.2.0` or a GitHub release URL can
+select a particular tag. Branches, source-tree links, bare tags without a release
+package, and repositories without eligible releases cannot be installed.
+
+The release must have a semantic version tag (such as `v1.2.0`) and an uploaded
+asset named **`vtcode-extension.zip`**. GitHub supplies the asset's SHA-256 digest.
+Its ZIP root contains `extension.json`, the prebuilt Wasm module, required runtime
+assets, and license notices. Source code, Git history, build tools, and vendored
+development dependencies stay in the repository. Git is not required to install.
 
 ```json
 {
   "id": "example.custom-editor",
   "name": "Example Custom Editor",
-  "version": "0.1.0",
-  "repository": "https://git.example/team/custom-editor",
+  "version": "1.2.0",
+  "repository": "https://github.com/owner/custom-editor",
   "apiVersion": "2",
   "main": "custom-editor.wasm"
 }
 ```
 
-Commit the extension's source and prebuilt module in the same package directory.
-Users install through **Extensions: Install Extension from Git Link**. The host
-clones HTTPS or SSH links using Git's existing credentials, copies tracked files,
-validates every package, and records the commit in `.vtcode-source.json`.
-Repositories may contain a single package or a collection. `#path=folder&ref=tag`
-selects a package and preselects a branch/tag; GitHub, GitLab and Codeberg browser tree links
-are also recognized. Use fragments for branch names containing `/`.
+The tag and manifest version must match; `apiVersion` is independent. Publish a
+new version for corrections. An already installed tag cannot be replaced by a
+different package. The picker recommends the highest stable semantic version,
+labels prereleases, identifies the installed package, and supports deliberate
+upgrades and downgrades. There are no automatic updates.
 
-The installer lists remote Git tags and branches before downloading a package.
-Semantic release tags such as `v1.2.0` are ordered by version with the latest
-stable release recommended; prereleases, other tags, and development branches
-are labeled separately. The installed version and selected commit are shown.
-Choosing an older tag deliberately downgrades the package. There are no
-automatic updates. A repository without tags offers development branches.
+Public releases work without sign-in. For private repositories or authenticated
+API access, VTCode uses `GH_TOKEN` / `GITHUB_TOKEN`, or your existing GitHub CLI
+sign-in (`gh auth login`). Credential lookup happens only during an explicit
+release lookup or download, with a five-second limit for the CLI. Tokens stay
+out of URLs, logs, and installation metadata; redirects to asset-storage hosts
+do not receive the authorization header.
 
-Each selection is pinned to the advertised commit. Annotated tags are resolved
-to their underlying commits, and full refs distinguish a tag from a branch
-with the same name. If a ref changes between selection and download, the host
-refuses the installation and asks the user to refresh. `.vtcode-source.json`
-records `version`, `reference`, `referenceKind`, and `commit`; older provenance
-files without `referenceKind` remain readable.
+Downloads stream to temporary disk storage in bounded chunks and are verified
+against the selected asset's exact size and SHA-256 before extraction. The host
+checks the manifest, repository identity, version, and Wasm host API before an
+atomic replacement. Failures preserve the existing installation. Provenance in
+`.vtcode-source.json` records the repository, tag, asset ID, and SHA-256.
 
-For a single package, a semantic version tag must match `extension.json`'s
-version. Commit source and prebuilt Wasm before tagging, then push the tag to
-publish that version. `apiVersion` remains independent of the package version.
-Do not force-update published version tags: replacing an already installed tag
-with a different commit is refused. Publish a new version for corrections.
+Packages contain one root manifest. Absolute paths, traversal, links, special
+files, case-colliding paths, nested extension manifests, Git metadata, and forged
+installation metadata are rejected. Installed build scripts are never executed.
+Compressed and unpacked packages are bounded at 256 MiB, with at most 4096 ZIP
+entries and 32 MiB per Wasm module, to keep installation resource usage bounded.
 
-Pasting the same source link lets users change installed versions. A different repository
-cannot replace the same extension ID. Installation is staged, preserves the
-previous version on validation failure, and rolls back a failed publication.
-Downloaded build scripts and Git hooks are never run. Packages cannot contain
-symlinks, submodules, absolute paths, or parent-directory traversal. Installation
-requires Git on PATH and noninteractive access to the repository. Each package
-is limited to 256 MiB and each Wasm module to 32 MiB.
+The three example extension projects include `package.py`, an explicit
+`package-files.json` allowlist, and a Release workflow. Their build commands also
+accept `--package <zip-path>`. To publish, update the manifest/Cargo versions,
+build and test, then push the matching tag. The workflow creates the GitHub
+release and uploads only the listed runtime files. Existing published assets
+are left unchanged. Locally built packages can be uploaded to that release too:
+
+```sh
+python package.py --tag v1.2.0 --output dist/vtcode-extension.zip
+gh release create v1.2.0 dist/vtcode-extension.zip dist/vtcode-extension.zip.sha256 --verify-tag
+```
 
 ## File-backed editors
 

@@ -1,6 +1,7 @@
 pub const API_VERSION: &str = "2";
 pub mod editor;
 
+#[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "vtcode")]
 unsafe extern "C" {
     fn host_log(ptr: *const u8, len: i32);
@@ -144,6 +145,7 @@ unsafe extern "C" {
     -> i32;
 }
 
+#[cfg(target_arch = "wasm32")]
 fn read_host_string(len: i32, read: impl FnOnce(*mut u8, i32) -> i32) -> Option<String> {
     if len <= 0 {
         return None;
@@ -157,6 +159,7 @@ fn read_host_string(len: i32, read: impl FnOnce(*mut u8, i32) -> i32) -> Option<
     String::from_utf8(buf).ok()
 }
 
+#[cfg(target_arch = "wasm32")]
 fn read_host_bytes(len: i32, read: impl Fn(i32, *mut u8, i32) -> i32) -> Option<Vec<u8>> {
     if len < 0 {
         return None;
@@ -178,6 +181,7 @@ fn read_host_bytes(len: i32, read: impl Fn(i32, *mut u8, i32) -> i32) -> Option<
     Some(out)
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn log(message: &str) {
     if message.is_empty() {
         return;
@@ -185,10 +189,12 @@ pub fn log(message: &str) {
     unsafe { host_log(message.as_ptr(), message.len() as i32) };
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn set_status(status: &str) {
     unsafe { host_set_status(status.as_ptr(), status.len() as i32) };
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn register_command(id: &str, title: &str) {
     if id.is_empty() || title.is_empty() {
         return;
@@ -203,6 +209,7 @@ pub fn register_command(id: &str, title: &str) {
     };
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn register_view(id: &str, title: &str, content: &str) {
     if id.is_empty() || title.is_empty() {
         return;
@@ -219,6 +226,7 @@ pub fn register_view(id: &str, title: &str, content: &str) {
     };
 }
 
+#[cfg(target_arch = "wasm32")]
 fn register_view_handler(
     id: &str,
     export_name: &str,
@@ -237,18 +245,22 @@ fn register_view_handler(
     };
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn register_view_key_handler(id: &str, export_name: &str) {
     register_view_handler(id, export_name, host_register_view_key_handler);
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn register_view_mouse_handler(id: &str, export_name: &str) {
     register_view_handler(id, export_name, host_register_view_mouse_handler);
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn register_view_scroll_handler(id: &str, export_name: &str) {
     register_view_handler(id, export_name, host_register_view_scroll_handler);
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn set_view_content(id: &str, content: &str) {
     if id.is_empty() {
         return;
@@ -263,6 +275,7 @@ pub fn set_view_content(id: &str, content: &str) {
     };
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn open_view(id: &str) {
     if id.is_empty() {
         return;
@@ -270,6 +283,7 @@ pub fn open_view(id: &str) {
     unsafe { host_open_view(id.as_ptr(), id.len() as i32) };
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn register_explorer_context_command(id: &str, title: &str) {
     if id.is_empty() || title.is_empty() {
         return;
@@ -284,6 +298,7 @@ pub fn register_explorer_context_command(id: &str, title: &str) {
     };
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn register_binary_open_command(id: &str, title: &str) {
     if id.is_empty() || title.is_empty() {
         return;
@@ -298,6 +313,7 @@ pub fn register_binary_open_command(id: &str, title: &str) {
     };
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn register_file_open_command(id: &str, title: &str, extensions: &str) {
     if id.is_empty() || title.is_empty() || extensions.trim().is_empty() {
         return;
@@ -314,6 +330,7 @@ pub fn register_file_open_command(id: &str, title: &str, extensions: &str) {
     };
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn context_target_path() -> Option<String> {
     read_host_string(
         unsafe { host_context_target_path_len() },
@@ -321,6 +338,7 @@ pub fn context_target_path() -> Option<String> {
     )
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn context_target_bytes() -> Option<Vec<u8>> {
     read_host_bytes(
         unsafe { host_context_target_size() },
@@ -328,6 +346,7 @@ pub fn context_target_bytes() -> Option<Vec<u8>> {
     )
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn active_file_path() -> Option<String> {
     read_host_string(
         unsafe { host_active_file_path_len() },
@@ -335,6 +354,7 @@ pub fn active_file_path() -> Option<String> {
     )
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn active_buffer_bytes() -> Option<Vec<u8>> {
     read_host_bytes(
         unsafe { host_active_buffer_size() },
@@ -342,11 +362,13 @@ pub fn active_buffer_bytes() -> Option<Vec<u8>> {
     )
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn active_buffer() -> Option<String> {
     let bytes = active_buffer_bytes()?;
     String::from_utf8(bytes).ok()
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn cursor_position() -> Option<(usize, usize)> {
     let line = unsafe { host_cursor_line() };
     let col = unsafe { host_cursor_col() };
@@ -356,6 +378,7 @@ pub fn cursor_position() -> Option<(usize, usize)> {
     Some((line as usize, col as usize))
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn selection_range() -> Option<(usize, usize, usize, usize)> {
     let start_line = unsafe { host_selection_start_line() };
     let start_col = unsafe { host_selection_start_col() };
@@ -372,6 +395,7 @@ pub fn selection_range() -> Option<(usize, usize, usize, usize)> {
     ))
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn workspace_root() -> Option<String> {
     read_host_string(
         unsafe { host_workspace_root_len() },
@@ -379,6 +403,7 @@ pub fn workspace_root() -> Option<String> {
     )
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn workspace_files() -> Option<Vec<String>> {
     let bytes = read_host_bytes(
         unsafe { host_workspace_files_size() },
@@ -391,6 +416,7 @@ pub fn workspace_files() -> Option<Vec<String>> {
     Some(text.lines().map(str::to_string).collect())
 }
 
+#[cfg(target_arch = "wasm32")]
 pub fn current_view_event() -> Option<String> {
     read_host_string(
         unsafe { host_current_view_event_len() },
@@ -399,6 +425,7 @@ pub fn current_view_event() -> Option<String> {
 }
 
 /// Register a floating overlay panel that renders on top of the editor.
+#[cfg(target_arch = "wasm32")]
 pub fn register_overlay(
     id: &str,
     title: &str,
@@ -428,6 +455,7 @@ pub fn register_overlay(
 }
 
 /// Update the content of an existing overlay.
+#[cfg(target_arch = "wasm32")]
 pub fn set_overlay_content(id: &str, content: &str) {
     if id.is_empty() {
         return;
@@ -443,6 +471,7 @@ pub fn set_overlay_content(id: &str, content: &str) {
 }
 
 /// Close and remove an overlay.
+#[cfg(target_arch = "wasm32")]
 pub fn close_overlay(id: &str) {
     if id.is_empty() {
         return;
@@ -452,6 +481,7 @@ pub fn close_overlay(id: &str) {
 
 /// Register a mouse handler for an overlay. The handler export receives events
 /// via `current_view_event()` as JSON with fields: kind, view_column, view_row, width, height.
+#[cfg(target_arch = "wasm32")]
 pub fn register_overlay_mouse_handler(id: &str, export_name: &str) {
     if id.is_empty() || export_name.is_empty() {
         return;
@@ -468,6 +498,7 @@ pub fn register_overlay_mouse_handler(id: &str, export_name: &str) {
 
 /// Register a keyboard handler for an overlay. The handler export receives events
 /// via `current_view_event()` as JSON with fields: code, text, shift, control, alt.
+#[cfg(target_arch = "wasm32")]
 pub fn register_overlay_key_handler(id: &str, export_name: &str) {
     if id.is_empty() || export_name.is_empty() {
         return;
@@ -484,6 +515,7 @@ pub fn register_overlay_key_handler(id: &str, export_name: &str) {
 
 /// Register a tick handler that is called periodically at the given interval (milliseconds).
 /// The handler export name is called with no arguments; use `current_view_event()` if needed.
+#[cfg(target_arch = "wasm32")]
 pub fn register_tick_handler(export_name: &str, interval_ms: u32) {
     if export_name.is_empty() {
         return;
@@ -498,12 +530,14 @@ pub fn register_tick_handler(export_name: &str, interval_ms: u32) {
 }
 
 /// Stop a previously registered timer. Extensions should stop timers when idle.
+#[cfg(target_arch = "wasm32")]
 pub fn unregister_tick_handler(export_name: &str) {
     register_tick_handler(export_name, 0);
 }
 
 /// Insert text at the given line and column position in the active editor.
 /// Returns 0 on success, -1 on error.
+#[cfg(target_arch = "wasm32")]
 pub fn insert_text(line: usize, col: usize, text: &str) -> i32 {
     if text.is_empty() {
         return -1;
@@ -513,6 +547,7 @@ pub fn insert_text(line: usize, col: usize, text: &str) -> i32 {
 
 /// Delete a range of text in the active editor.
 /// Returns 0 on success, -1 on error.
+#[cfg(target_arch = "wasm32")]
 pub fn delete_range(start_line: usize, start_col: usize, end_line: usize, end_col: usize) -> i32 {
     unsafe {
         host_delete_range(
@@ -527,12 +562,14 @@ pub fn delete_range(start_line: usize, start_col: usize, end_line: usize, end_co
 /// Replace the current selection in the active editor with the given text.
 /// If no selection exists, inserts at cursor position.
 /// Returns 0 on success, -1 on error.
+#[cfg(target_arch = "wasm32")]
 pub fn replace_selection(text: &str) -> i32 {
     unsafe { host_replace_selection(text.as_ptr(), text.len() as i32) }
 }
 
 /// Publish a diagnostic for a file. Severity: 1=error, 2=warning, 3=info, 4=hint.
 /// Returns 0 on success, -1 on error.
+#[cfg(target_arch = "wasm32")]
 pub fn publish_diagnostic(
     file: &str,
     line: usize,
@@ -562,6 +599,7 @@ pub fn publish_diagnostic(
 
 /// Clear all diagnostics published by this extension for the given file.
 /// Returns 0 on success, -1 on error.
+#[cfg(target_arch = "wasm32")]
 pub fn clear_diagnostics(file: &str) -> i32 {
     if file.is_empty() {
         return -1;
@@ -571,6 +609,7 @@ pub fn clear_diagnostics(file: &str) -> i32 {
 
 /// Save a setting value for this extension. Settings persist in the portable directory under .vtcode/workspaces/<id>/extension-settings.json.
 /// Returns 0 on success, -1 on error.
+#[cfg(target_arch = "wasm32")]
 pub fn save_setting(key: &str, value: &str) -> i32 {
     if key.is_empty() {
         return -1;
@@ -586,6 +625,7 @@ pub fn save_setting(key: &str, value: &str) -> i32 {
 }
 
 /// Load a setting value for this extension. Returns None if the setting doesn't exist.
+#[cfg(target_arch = "wasm32")]
 pub fn load_setting(key: &str) -> Option<String> {
     if key.is_empty() {
         return None;

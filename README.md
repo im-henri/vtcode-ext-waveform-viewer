@@ -14,10 +14,10 @@ implementation using VTCode's terminal extension API.
 
 ## Try it in VTCode
 
-Requires [VTCode 0.1.5 or newer](https://github.com/im-henri/vtcode/releases).
-Run **Extensions: Install Extension from Git Link** in the command palette,
+Use a VTCode build with GitHub release-package installation support.
+Run **Extensions: Install Extension from GitHub** in the command palette,
 paste `https://github.com/im-henri/vtcode-ext-waveform-viewer`, and select
-`v0.1.0`. The repository includes the source and a ready-to-run Wasm package.
+`v0.2.0`. VTCode downloads the runtime ZIP attached to the release, not the Git repository.
 
 To build from source, clone this repository and install into a VTCode workspace:
 
@@ -383,3 +383,26 @@ MIT. See [LICENSE](LICENSE), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), a
 the vendored dependency license files. The included VCD examples are generated
 by `examples/generate_demo.py` and `examples/generate_transfer_demo.py`; the small
 GCD FST fixture is attributed separately.
+
+## Publish a VTCode release
+
+Keep `extension.json`, `Cargo.toml`, and `Cargo.lock` versions identical. Build
+and test the extension, then run:
+
+```sh
+python package.py --tag v0.2.0 --output dist/vtcode-extension.zip
+```
+
+`package-files.json` explicitly lists the manifest, prebuilt Wasm, documentation,
+and license notices needed in the runtime package. Source trees, Git metadata,
+build scripts, and unlisted files are excluded. Add runtime assets to this list
+when needed. ZIP creation is reproducible and streams files in bounded chunks.
+
+Create and push the matching version tag. The Release workflow builds and tests
+the extension and attaches `vtcode-extension.zip` to its GitHub release. A tag
+without this package is not installable in VTCode. Existing published packages
+are never overwritten: publish a new version for corrections.
+
+Private GitHub releases use your existing `gh auth login` sign-in, or
+`GH_TOKEN` / `GITHUB_TOKEN`. VTCode retrieves release metadata and the runtime
+ZIP directly; it never clones the repository to install an extension.

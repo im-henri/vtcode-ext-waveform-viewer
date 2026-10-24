@@ -1,0 +1,41 @@
+name: Release runtime package
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.13'
+      - name: Install Wasm target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Test packaging
+        run: python -m unittest discover -s tests -p 'test_*.py'
+      - name: Build and test
+        run: python tools/build.py
+      - name: Package tagged runtime files
+        run: python package.py --tag "$GITHUB_REF_NAME" --output dist/vtcode-extension.zip
+      - name: Publish package without replacing an existing version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' 2>/dev/null | grep -Fxq 'vtcode-extension.zip'; then
+            echo 'This tag already has a runtime package; leaving it unchanged.'
+            exit 0
+          fi
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes 'Runtime-only package for VTCode. Source remains available in this tagged repository.'
+          gh release upload "$GITHUB_REF_NAME" dist/vtcode-extension.zip dist/vtcode-extension.zip.sha256
