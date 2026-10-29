@@ -1,4 +1,4 @@
-use crate::model::Radix;
+use crate::model::{Radix, Value};
 use crate::render::display_value;
 use crate::viewer::{BrowserNode, Hover, OverviewDrag, Viewer, Watch, WaveRow};
 
@@ -8,14 +8,26 @@ pub(crate) const HELP_LINES: &[&str] = &[
     "             Up / Down, PgUp / PgDn  Select signal",
     "             Tab                    Switch hierarchy / waves",
     "TIME         + / -                  Zoom around A; 0 fits the recording",
+    "             i / Detail             Resolve edges and bus values around A",
+    "             z / Shift+Z            Fit A-B / restore previous time view",
+    "             v / Inspect            Toggle the docked value inspector",
+    "             Hover + i              Zoom into the pointer cell; repeat to drill in",
+    "             Double-click activity  Resolve a compressed cell",
+    "             Zoom pauses at the terminal detail limit; - again continues",
+    "             Overview: shaded cells contain multiple values, not a level",
+    "             Values stay at A; pointer time/value appears in the inspector",
+    "             At an edge: Before -> After; the timestamp uses After",
     "             Shift+Left / Right     Pan left / right",
     "             Ctrl+G                 Go to ticks or e.g. 125 ns",
     "             Home / End             Beginning / end; z zooms between A-B",
-    "CURSORS      Click / drag           Cursor A; Alt sets cursor B",
-    "             Alt+Left / Right       Step B; Shift+B removes B",
+    "CURSORS      Click / drag           Cursor A; middle or Alt sets B",
+    "             Alt+n / Alt+Shift+n    Next / previous B edge; Shift+B removes B",
+    "             Alt+click edge button  Step B without moving A",
+    "             Click A / B time       Enter exact time; x exchanges cursors",
     "             m / M, [ / ]           Add / remove marker; previous / next",
     "             s                      Toggle edge snapping",
-    "SIGNALS      / or Ctrl+F             Filter paths; Enter adds / expands",
+    "SIGNALS      / or Signals           Inline path search; Enter adds / expands",
+    "             Up / Down in search    Choose a matching signal; Esc restores filter",
     "             Shift+Enter on scope   Add descendants (up to 256 watches)",
     "             Drag from All signals  Preview and place; Esc cancels",
     "             Alt+Up / Down          Reorder; drag watched name also moves",
@@ -33,6 +45,7 @@ pub(crate) const HELP_LINES: &[&str] = &[
     "             F3 / Shift+F3          Repeat forward / backward",
     "             0x / 0b override radix; x / z find four-state values",
     "SESSION      Ctrl+S                 Save view; source dump stays read-only",
+    "             : / top menu bar       File, Signal, View, Waveform, Cursors, Tools",
     "             Ctrl+Z / Ctrl+Y        Undo / redo signal-list edits",
     "             Ctrl+C / Ctrl+E        Copy value / portable session JSON",
     "             Ctrl+V                 Import pasted session JSON; Enter applies",
@@ -151,6 +164,70 @@ impl Viewer {
         }
     }
 
+    pub(crate) fn hover_activity(&self, hover: Hover) -> Option<String> {
+        if hover.x < self.layout().wave_x {
+            return None;
+        }
+        let row = hover.row?;
+        let id = self.signal_id(row.watch)?;
+        let Watch::Signal { bit, .. } = self.session.watches[row.watch] else {
+            return None;
+        };
+        let trace = &self.wave.traces[self.wave.signals[id].trace];
+        let (start, end) = self.cell_range(hover.x);
+        let first = trace.index_at(start);
+        let last = trace.index_at(end);
+        let activity = trace.activity(first, last, row.bit.or(bit));
+        if !activity.compressed() {
+            return None;
+        }
+        Some(if activity == crate::sampling::Activity::Unresolved {
+            "░ Bit unresolved here · i inspects this cell".into()
+        } else {
+            format!(
+                "▒ {} in ({}, {}] · i inspects this cell",
+                if row.bit.or(bit).is_some() {
+                    "Multiple bit changes".into()
+                } else {
+                    format!("{} changes", last - first)
+                },
+                self.wave.timescale.format(start),
+                self.wave.timescale.format(end)
+            )
+        })
+    }
+
+    pub(crate) fn hover_transition(&self, hover: Hover) -> Option<(u64, Value, Value)> {
+        let row = hover.row?;
+        let id = self.signal_id(row.watch)?;
+        let Watch::Signal { bit, .. } = self.session.watches[row.watch] else {
+            return None;
+        };
+        let bit = row.bit.or(bit);
+        let trace = &self.wave.traces[self.wave.signals[id].trace];
+        let mut time = self.hover_time(hover);
+        if hover.x >= self.layout().wave_x {
+            let (start, end) = self.cell_range(hover.x);
+            let first = trace.index_at(start);
+            let last = trace.index_at(end);
+            match trace.activity(first, last, bit) {
+                crate::sampling::Activity::Mixed | crate::sampling::Activity::Unresolved => {
+                    return None;
+                }
+                crate::sampling::Activity::Edge => {
+                    time = (first..last).find_map(|i| {
+                        trace
+                            .transition_index(trace.changes[i].time, bit)
+                            .map(|_| trace.changes[i].time)
+                    })?;
+                }
+                _ => {}
+            }
+        }
+        let (before, after) = self.transition_values(row.watch, row.bit, time)?;
+        Some((time, before, after))
+    }
+
     pub(crate) fn full_watch_label(&self, row: WaveRow) -> String {
         let Some(Watch::Signal { path, bit, .. }) = self.session.watches.get(row.watch) else {
             return String::new();
@@ -243,6 +320,13 @@ impl Viewer {
         }
         let hover = self.hover?;
         let l = self.layout();
+        if hover.y == 0 {
+            return self
+                .main_menus()
+                .into_iter()
+                .find(|b| hover.x >= b.x && hover.x < b.x + b.width)
+                .map(|b| format!("{} menu · Click to open · ←/→ changes menu", b.menu.name()));
+        }
         if hover.y == 1 {
             return self
                 .toolbar()
@@ -258,6 +342,8 @@ impl Viewer {
                                 "The entire recording is visible · Use + or Ctrl+wheel to zoom in"
                                     .into()
                             }
+                            "zoom_back" => "No previous time view · Zoom or select a range first".into(),
+                            "fit_cursors" => "Set B with Alt+click or Shift+B to fit the A–B range".into(),
                             "radix" | "analog" if self.selected().is_some_and(|(_, _, bit)| bit.is_some()) => "Bits use binary values · Select the parent bus to change its format".into(),
                             _ => "Select a signal to use this control".into(),
                         }
@@ -266,16 +352,16 @@ impl Viewer {
         }
         if hover.x < l.browser {
             if matches!(hover.y, 3 | 4) {
-                return Some(
-                    if !self.filter.is_empty()
-                        && hover.y == 4
-                        && hover.x >= l.browser.saturating_sub(3)
-                    {
-                        "Clear the signal filter".into()
-                    } else {
-                        "Filter signal paths · / or Ctrl+F".into()
-                    },
-                );
+                return Some(if hover.y == 3 && hover.x >= l.browser.saturating_sub(3) {
+                    "Close the signal browser · b reopens it".into()
+                } else if !self.filter.is_empty()
+                    && hover.y == 4
+                    && hover.x >= l.browser.saturating_sub(3)
+                {
+                    "Clear the signal filter".into()
+                } else {
+                    "Filter signal paths · / or Ctrl+F".into()
+                });
             }
             if hover.y >= l.body_y && hover.y < l.body_y + l.body_height {
                 let index = self.browser_scroll + usize::from(hover.y - l.body_y);
@@ -294,7 +380,10 @@ impl Viewer {
                 });
             }
         }
-        if self.height >= 8 && hover.y == self.height.min(200) - 3 && hover.x >= l.wave_x {
+        if self.height >= 8
+            && (self.height.min(200) - 4..=self.height.min(200) - 3).contains(&hover.y)
+            && hover.x >= l.wave_x
+        {
             return Some(format!(
                 "Overview @ {} · Drag the highlighted viewport to pan · Click outside to center",
                 self.wave.timescale.format(self.overview_time(hover.x))
@@ -340,11 +429,30 @@ impl Viewer {
             ));
         }
         let time = self.hover_time(hover);
-        let value = self.watch_value(row.watch, row.bit, time)?;
+        let value = self.watch_value(row.watch, row.bit, time);
+        if let Some((edge, before, after)) = self.hover_transition(hover) {
+            return Some(format!(
+                "Edge @ {} · Before {} → After {} · At edge = After · Ctrl+C copies After",
+                self.wave.timescale.format(edge),
+                display_value(&before, radix),
+                display_value(&after, radix)
+            ));
+        }
         Some(format!(
-            "@ {} · {name} · {} · Ctrl+C copies value",
+            "{} @ {} · {name} · {}{} · Ctrl+C copies value",
+            if hover.x >= l.wave_x {
+                "Pointer"
+            } else {
+                "Cursor A"
+            },
             self.wave.timescale.format(time),
-            display_value(&value, radix)
+            value
+                .as_ref()
+                .map(|value| display_value(value, radix))
+                .unwrap_or_else(|| "No recorded value".into()),
+            self.hover_activity(hover)
+                .map(|hint| format!(" · {hint}"))
+                .unwrap_or_default()
         ))
     }
 }

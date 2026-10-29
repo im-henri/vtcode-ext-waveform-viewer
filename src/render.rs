@@ -1,5 +1,6 @@
 use crate::model::{Radix, Value};
 use crate::navigation::scrollbar;
+use crate::sampling::{Activity, Sample};
 use crate::viewer::{BrowserNode, Focus, PALETTE, Viewer, Watch, WaveRow};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vtcode_extension_api::editor::{Frame, Span};
@@ -193,6 +194,21 @@ pub struct Renderer {
     canvas: Canvas,
     frame: Frame,
 }
+
+#[derive(Default)]
+struct Resolution {
+    mixed: bool,
+    unresolved: bool,
+    unlabelled: bool,
+}
+impl Resolution {
+    fn compressed(&self) -> bool {
+        self.mixed || self.unresolved
+    }
+    fn overview(&self) -> bool {
+        self.compressed() || self.unlabelled
+    }
+}
 impl Default for Renderer {
     fn default() -> Self {
         Self {
@@ -227,34 +243,12 @@ impl Viewer {
             return;
         }
         let l = self.layout();
-        let name = self.path.rsplit(['/', '\\']).next().unwrap_or("Waveform");
         canvas.fill(0, 0, width, "text", "header");
-        let title = format!("∿  {name}");
-        canvas.text(
-            1,
-            0,
-            width.saturating_sub(2),
-            &ellipsize(&title, width.saturating_sub(2) as usize),
-            "accent",
-            "header",
-            true,
-        );
-        let meta_x = title.width().saturating_add(3).min(width as usize) as u16;
-        canvas.text(
-            meta_x,
-            0,
-            width.saturating_sub(meta_x + 1),
-            &format!(
-                "·  {}  ·  {} signals  ·  {} / tick",
-                self.wave.format,
-                self.wave.signals.len(),
-                self.wave.timescale.label()
-            ),
-            "muted",
-            "header",
-            false,
-        );
+        canvas.fill(0, 1, width, "text", "header");
         for button in self.toolbar() {
+            if matches!(button.action, "previous" | "find" | "browser" | "save") && button.x > 2 {
+                canvas.character(button.x - 2, 1, '│', "muted");
+            }
             let hovered = self
                 .hover
                 .is_some_and(|h| h.y == 1 && h.x >= button.x && h.x < button.x + button.width);
@@ -292,8 +286,8 @@ impl Viewer {
             .map(|t| self.wave.timescale.format(t.abs_diff(self.session.cursor)))
             .unwrap_or_else(|| "—".into());
         let measurement = [
-            (format!("A {a}   "), "accent"),
-            (format!("B {b}   "), "warning"),
+            (format!("[A {a}]  "), "accent"),
+            (format!("[B {b}]  "), "warning"),
             (format!("Δ {delta}   "), "text"),
             (
                 format!(
@@ -375,20 +369,22 @@ impl Viewer {
             l.browser + l.name,
             3,
             l.value,
-            if l.value < 11 {
-                " Value"
-            } else if self
-                .hover
-                .is_some_and(|h| h.row.is_some() && h.x >= l.wave_x)
-            {
-                " Value @ t"
-            } else {
-                " Value @ A"
-            },
+            if l.value < 11 { " @ A" } else { " Value @ A" },
             "text",
             "header",
             true,
         );
+        if l.value >= 13 {
+            canvas.text(
+                l.browser + l.name,
+                4,
+                l.value.saturating_sub(1),
+                "before→after",
+                "muted",
+                "",
+                false,
+            );
+        }
         if l.browser > 0 {
             for y in 4..l.body_y + l.body_height {
                 canvas.fill(0, y, l.browser, "muted", "panel");
@@ -396,7 +392,7 @@ impl Viewer {
             canvas.text(
                 1,
                 3,
-                l.browser.saturating_sub(2),
+                l.browser.saturating_sub(5),
                 "Hierarchy  / filter",
                 if self.focus == Focus::Browser {
                     "accent"
@@ -405,6 +401,15 @@ impl Viewer {
                 },
                 "header",
                 true,
+            );
+            canvas.text(
+                l.browser.saturating_sub(3),
+                3,
+                2,
+                "×",
+                "muted",
+                "header",
+                false,
             );
             let filter = if self.filter.is_empty() {
                 "All signals".to_string()
@@ -542,6 +547,11 @@ impl Viewer {
         let step = tick_step(self.session.span, l.wave_width);
         let first = self.session.start.div_ceil(step).saturating_mul(step);
         let right = self.session.start.saturating_add(self.session.span);
+        let start_label = self.wave.timescale.format(self.session.start);
+        let end_label = self.wave.timescale.format(right);
+        let end_x = width.saturating_sub(end_label.width() as u16).max(l.wave_x);
+        let endpoints_fit =
+            start_label.width() + end_label.width() + 4 <= usize::from(l.wave_width);
         let mut tick = first;
         for _ in 0..128 {
             if tick > right {
@@ -550,7 +560,11 @@ impl Viewer {
             if let Some(x) = self.column_at(tick) {
                 let label = self.wave.timescale.format(tick);
                 // An incomplete ruler label looks like a different timestamp.
-                if label.width() <= usize::from(width.saturating_sub(x)) {
+                if label.width() <= usize::from(width.saturating_sub(x))
+                    && (!endpoints_fit
+                        || x > l.wave_x + start_label.width() as u16 + 1
+                            && x + label.width() as u16 + 1 < end_x)
+                {
                     canvas.text(x, 4, label.width() as u16, &label, "muted", "", false);
                 }
                 for y in l.body_y..l.body_y + l.body_height {
@@ -563,12 +577,105 @@ impl Viewer {
             }
             tick = next;
         }
+        if endpoints_fit {
+            canvas.text(
+                l.wave_x,
+                4,
+                start_label.width() as u16,
+                &start_label,
+                "text",
+                "",
+                false,
+            );
+            canvas.text(
+                end_x,
+                4,
+                end_label.width() as u16,
+                &end_label,
+                "text",
+                "",
+                false,
+            );
+        }
         let rows = self.display_rows();
+        let mut resolution = Resolution::default();
         for row in rows.iter().filter(|r| {
             r.row.line as usize + r.row.height as usize > self.scroll
                 && (r.row.line as usize) < self.scroll + l.body_height as usize
         }) {
-            self.draw_row(canvas, row.row, row.preview);
+            self.draw_row(canvas, row.row, row.preview, &mut resolution);
+        }
+        let scale = format!(
+            "{} · {}",
+            if resolution.overview() {
+                "Overview"
+            } else {
+                "Detail"
+            },
+            self.cell_scale()
+        );
+        // Keep the resolution readout outside cursor/marker handles on the ruler.
+        let badge_width = if width >= 80 {
+            (scale.width() as u16 + 2).min(width / 2)
+        } else {
+            0
+        };
+        let title_end = width.saturating_sub(badge_width + 1);
+        let mut meta_x = 1;
+        for button in self.main_menus() {
+            let active = self.context_menu.as_ref().is_some_and(|menu| matches!(menu.target, crate::menus::MenuTarget::Main(menu) if menu == button.menu));
+            let hover = self.hover.is_some_and(|hover| {
+                hover.y == 0 && hover.x >= button.x && hover.x < button.x + button.width
+            });
+            canvas.text(
+                button.x,
+                0,
+                button.width,
+                &format!(" {} ", button.menu.name()),
+                if active { "foreground" } else { "accent" },
+                if active || hover {
+                    "selection"
+                } else {
+                    "header"
+                },
+                active,
+            );
+            meta_x = button.x + button.width + 1;
+        }
+        let name = self.path.rsplit(['/', '\\']).next().unwrap_or("Waveform");
+        let metadata = if title_end.saturating_sub(meta_x) >= 45 {
+            format!(
+                "{name} · {} · {} signals · {} / tick",
+                self.wave.format,
+                self.wave.signals.len(),
+                self.wave.timescale.label()
+            )
+        } else {
+            format!("{} · {name}", self.wave.format)
+        };
+        canvas.text(
+            meta_x,
+            0,
+            title_end.saturating_sub(meta_x),
+            &ellipsize(&metadata, title_end.saturating_sub(meta_x) as usize),
+            "muted",
+            "header",
+            false,
+        );
+        if badge_width > 0 {
+            canvas.text(
+                title_end + 1,
+                0,
+                badge_width.saturating_sub(1),
+                &ellipsize(&scale, badge_width.saturating_sub(1) as usize),
+                if resolution.overview() {
+                    "warning"
+                } else {
+                    "muted"
+                },
+                "header",
+                true,
+            );
         }
         for y in 3..l.body_y + l.body_height {
             if l.name > 0 {
@@ -716,6 +823,7 @@ impl Viewer {
         }
         if height >= 8 {
             self.draw_overview(canvas);
+            self.draw_inspector(canvas);
         }
         if height >= 2 {
             canvas.fill(0, height - 2, width, "muted", "header");
@@ -739,8 +847,53 @@ impl Viewer {
                 false,
             );
         }
+        let resolution_hint = if resolution.unlabelled && !resolution.compressed() {
+            "Overview · Bus intervals too narrow for full values · Detail resolves values around A · + zooms in".into()
+        } else if resolution.compressed() {
+            if width >= 115 {
+                format!(
+                    "Overview · ▒ multiple values in one cell{} · Hover + i: inspect cell · Detail: A · ←/→ exact edges",
+                    if resolution.unresolved {
+                        " · ░ unresolved bit"
+                    } else {
+                        ""
+                    }
+                )
+            } else if resolution.unresolved {
+                "Overview · ▒ mixed · ░ unresolved · Hover + i: inspect".into()
+            } else {
+                "Overview · ▒ multiple values / cell · Hover + i: inspect".into()
+            }
+        } else {
+            String::new()
+        };
+        let edge_hint = self.selected().and_then(|(_, _, bit)| {
+            let (before, after) =
+                self.transition_values(self.selection, bit, self.session.cursor)?;
+            let radix = match self.session.watches[self.selection] {
+                Watch::Signal { radix, .. } if bit.is_none() => radix,
+                _ => Radix::Binary,
+            };
+            Some(format!(
+                "{}A edge @ {} · Before {} → After {} · At the transition, A uses After",
+                if resolution.compressed() {
+                    "▒ multiple values/cell · "
+                } else {
+                    ""
+                },
+                self.wave.timescale.format(self.session.cursor),
+                display_value(&before, radix),
+                display_value(&after, radix)
+            ))
+        });
         let hint = if self.signal_drag.as_ref().is_some_and(|d| d.active) {
             "Drop anywhere in Signals or the timeline · Hold near an edge to scroll · Wheel scrolls signals · Esc cancels"
+        } else if self.inspector_height() == 0
+            && let Some(hint) = &edge_hint
+        {
+            hint
+        } else if resolution.overview() {
+            &resolution_hint
         } else if self.selection_count() > 1 {
             "Right-click selection: format, color & size   Delete removes   Ctrl+Z undo   Esc selects one   ? help"
         } else {
@@ -776,9 +929,18 @@ impl Viewer {
         frame.height = self.height;
         frame.document = self.document;
         frame.title = Some(format!("{name} · Waveform"));
+        if frame.pointer_buttons.is_empty() {
+            frame.pointer_buttons.push("middle".into());
+        }
     }
 
-    fn draw_row(&self, canvas: &mut Canvas, row: WaveRow, preview: bool) {
+    fn draw_row(
+        &self,
+        canvas: &mut Canvas,
+        row: WaveRow,
+        preview: bool,
+        resolution: &mut Resolution,
+    ) {
         let l = self.layout();
         let item = if preview {
             self.signal_drag.as_ref().map(|d| &d.watch)
@@ -888,8 +1050,12 @@ impl Viewer {
                     },
                     self.watch_label_for(item, row.bit)
                 );
-                let label_y = relative_y
-                    + i32::from(row.height / 2).saturating_sub(i32::from(row.height == 2));
+                let label_y = (relative_y
+                    + i32::from(row.height / 2).saturating_sub(i32::from(row.height == 2)))
+                .clamp(
+                    i32::from(l.body_y),
+                    i32::from(l.body_y + l.body_height.saturating_sub(1)),
+                );
                 if label_y >= i32::from(l.body_y) && label_y < i32::from(l.body_y + l.body_height) {
                     let badge = if l.name >= 23
                         && effective_bit.is_none()
@@ -918,7 +1084,7 @@ impl Viewer {
                             &name,
                             l.name.saturating_sub(if badge.is_some() { 7 } else { 2 }) as usize,
                         ),
-                        role,
+                        "text",
                         bg,
                         selected || preview,
                     );
@@ -933,11 +1099,7 @@ impl Viewer {
                             false,
                         );
                     }
-                    let time = self
-                        .hover
-                        .filter(|h| h.row.is_some() && h.x >= l.wave_x)
-                        .map(|h| self.hover_time(h))
-                        .unwrap_or(self.session.cursor);
+                    let time = self.session.cursor;
                     if let Some(value) = id
                         .and_then(|id| self.wave.traces[self.wave.signals[id].trace].value_at(time))
                     {
@@ -954,14 +1116,25 @@ impl Viewer {
                         } else {
                             *radix
                         };
+                        let label = if let Some((before, after)) =
+                            self.transition_values(row.watch, row.bit, time)
+                        {
+                            transition_label(
+                                &display_value(&before, radix),
+                                &display_value(&after, radix),
+                                usize::from(l.value.saturating_sub(2)),
+                            )
+                        } else {
+                            ellipsize(
+                                &display_value(&value, radix),
+                                usize::from(l.value.saturating_sub(2)),
+                            )
+                        };
                         canvas.text(
                             l.browser + l.name + 1,
                             label_y as u16,
                             l.value.saturating_sub(2),
-                            &ellipsize(
-                                &display_value(&value, radix),
-                                l.value.saturating_sub(2) as usize,
-                            ),
+                            &label,
                             value_role,
                             bg,
                             selected || preview,
@@ -988,6 +1161,7 @@ impl Viewer {
                         *radix,
                         role,
                         *analog && effective_bit.is_none(),
+                        resolution,
                     );
                 }
             }
@@ -1046,16 +1220,22 @@ impl Viewer {
         radix: Radix,
         role: &'static str,
         analog: bool,
+        resolution: &mut Resolution,
     ) {
         let l = self.layout();
         let trace = &self.wave.traces[self.wave.signals[signal].trace];
         let digital = bit.is_some()
             || self.wave.signals[signal].width == 1 && self.wave.signals[signal].kind != "real";
+        let samples = self.samples(trace, bit);
+        for sample in &samples {
+            resolution.mixed |= sample.activity == Activity::Mixed;
+            resolution.unresolved |= sample.activity == Activity::Unresolved;
+        }
         if !digital && !analog {
             if row.height == 1 {
-                self.draw_compact_bus(canvas, y, signal, radix, role);
+                self.draw_compact_bus(canvas, y, signal, radix, role, &samples);
             } else {
-                self.draw_bus(canvas, y, signal, radix, role);
+                resolution.unlabelled |= self.draw_bus(canvas, y, signal, radix, role, &samples);
             }
             return;
         }
@@ -1090,36 +1270,42 @@ impl Viewer {
                 canvas.character(x, y as u16, ch, role);
             }
         };
-        let mut previous_index = trace.index_at(self.session.start);
         let mut previous_logic = 'x';
         let mut previous_position = None;
-        for dx in 0..l.wave_width {
-            let x = l.wave_x + dx;
-            let time = self.time_at(x);
-            let next_time = if dx + 1 < l.wave_width {
-                self.time_at(x + 1)
-            } else {
-                time
-            };
-            let index = trace.index_at(time);
-            let edge_index = trace.index_at(next_time);
+        for (dx, sample) in samples.iter().enumerate() {
+            let x = l.wave_x + dx as u16;
+            let index = sample.index;
             let value = index
                 .checked_sub(1)
                 .and_then(|index| trace.changes.get(index))
                 .map(|c| &c.value);
             let bit_value = bit.and_then(|bit| value.map(|value| value.bit(bit)));
             let value = bit_value.as_ref().or(value);
-            let logic = value.map(Value::logic).unwrap_or('x');
+            let logic = value.map(Value::logic).unwrap_or('·');
             let value_role = match logic {
                 'x' => "error",
                 'z' => "warning",
                 _ => role,
             };
-            let changed = index != previous_index && logic != previous_logic;
-            // Dense pulses are marked, rather than aliased into a constant line.
-            let dense = (edge_index.saturating_sub(index) > 1
-                || index.saturating_sub(previous_index) > 1)
-                && bit.is_none();
+            let changed = sample.activity == Activity::Edge && logic != previous_logic;
+            if let Some(glyph) = sample.activity.glyph() {
+                for offset in 0..row.height {
+                    draw(
+                        canvas,
+                        x,
+                        offset,
+                        glyph,
+                        if sample.activity == Activity::Mixed {
+                            role
+                        } else {
+                            "muted"
+                        },
+                    );
+                }
+                previous_logic = logic;
+                previous_position = None;
+                continue;
+            }
             if analog {
                 if let Some(number) = value.and_then(|v| v.number(radix == Radix::Signed)) {
                     let position = if range.1 > range.0 {
@@ -1164,13 +1350,11 @@ impl Viewer {
                     }
                     previous_position = Some(position);
                 } else {
-                    draw(canvas, x, 1, 'x', value_role);
+                    draw(canvas, x, row.height / 2, logic, value_role);
                 }
             } else if digital {
                 if row.height == 1 {
-                    let ch = if dense {
-                        '┆'
-                    } else if changed
+                    let ch = if changed
                         && matches!(logic, '0' | '1')
                         && matches!(previous_logic, '0' | '1')
                     {
@@ -1182,18 +1366,11 @@ impl Viewer {
                             '0' => '▁',
                             '1' => '▔',
                             'z' => '┄',
+                            '·' => '·',
                             _ => 'x',
                         }
                     };
                     draw(canvas, x, 0, ch, value_role);
-                    previous_index = index;
-                    previous_logic = logic;
-                    continue;
-                }
-                if dense {
-                    draw(canvas, x, 0, '┆', value_role);
-                    draw(canvas, x, 1, '┆', value_role);
-                    previous_index = index;
                     previous_logic = logic;
                     continue;
                 }
@@ -1209,6 +1386,10 @@ impl Viewer {
                     'z' => {
                         draw(canvas, x, 0, 'z', value_role);
                         draw(canvas, x, 1, '┄', value_role);
+                    }
+                    '·' => {
+                        draw(canvas, x, 0, '·', "muted");
+                        draw(canvas, x, 1, '·', "muted");
                     }
                     _ => {
                         draw(canvas, x, 0, 'x', value_role);
@@ -1232,7 +1413,6 @@ impl Viewer {
                     );
                 }
             }
-            previous_index = index;
             previous_logic = logic;
         }
     }
@@ -1244,7 +1424,8 @@ impl Viewer {
         signal: usize,
         radix: Radix,
         role: &'static str,
-    ) {
+        samples: &[Sample],
+    ) -> bool {
         let l = self.layout();
         let trace = &self.wave.traces[self.wave.signals[signal].trace];
         let draw = |canvas: &mut Canvas, x, offset, ch, role| {
@@ -1259,14 +1440,9 @@ impl Viewer {
         let mut runs = Vec::new();
         let mut start = 0;
         let mut previous = trace.index_at(self.session.start);
-        let mut rail_role = "muted";
-        let samples = (0..l.wave_width)
-            .map(|dx| trace.index_at(self.time_at(l.wave_x + dx)))
-            .collect::<Vec<_>>();
-        let mut joins = Vec::new();
-        let mut tapered = vec![false; l.wave_width as usize];
+        let mut rail_role = role;
         for dx in 0..l.wave_width {
-            let index = samples[dx as usize];
+            let index = samples[dx as usize].index;
             let changed = index != previous;
             if dx == 0 || changed {
                 rail_role = index
@@ -1275,51 +1451,52 @@ impl Viewer {
                     .map(|c| match c.value.logic() {
                         'x' => "error",
                         'z' => "warning",
-                        _ => "muted",
+                        _ => role,
                     })
                     .unwrap_or("muted");
             }
             draw(canvas, l.wave_x + dx, 0, '─', rail_role);
             draw(canvas, l.wave_x + dx, 2, '─', rail_role);
             if changed {
-                let dense = index.saturating_sub(previous) > 1;
-                // A narrow neck joins the two bus envelopes. At sub-cell
-                // density use a compact boundary instead of overlapping caps.
-                let taper = !dense
-                    && dx >= 2
-                    && samples[dx as usize - 2] == previous
-                    && samples
-                        .get(dx as usize + 1)
-                        .is_none_or(|next| *next == index);
-                tapered[dx as usize] = taper;
-                joins.push((dx, taper, dense, rail_role));
+                // A boundary occupies its own time column. Straight joins avoid
+                // decorating neighboring values or suggesting an analog slope.
+                draw(canvas, l.wave_x + dx, 0, '┬', rail_role);
+                draw(canvas, l.wave_x + dx, 1, '│', rail_role);
+                draw(canvas, l.wave_x + dx, 2, '┴', rail_role);
                 runs.push((start, dx, previous));
                 start = dx;
             }
             previous = index;
         }
         runs.push((start, l.wave_width, previous));
-        for (dx, taper, dense, rail_role) in joins {
-            let x = l.wave_x + dx;
-            if taper {
-                for (offset, left, right) in [(0, '╮', '╭'), (1, '├', '┤'), (2, '╯', '╰')]
-                {
-                    draw(canvas, x - 1, offset, left, rail_role);
-                    draw(canvas, x, offset, right, rail_role);
+        for (dx, sample) in samples.iter().enumerate() {
+            if let Some(glyph) = sample.activity.glyph() {
+                for offset in 0..3 {
+                    draw(
+                        canvas,
+                        l.wave_x + dx as u16,
+                        offset,
+                        glyph,
+                        if sample.activity == Activity::Mixed {
+                            role
+                        } else {
+                            "muted"
+                        },
+                    );
                 }
-            } else {
-                draw(canvas, x, 0, '┬', rail_role);
-                draw(canvas, x, 1, if dense { '┆' } else { '│' }, rail_role);
-                draw(canvas, x, 2, '┴', rail_role);
+            } else if sample.index == 0 {
+                draw(canvas, l.wave_x + dx as u16, 0, '·', "muted");
+                draw(canvas, l.wave_x + dx as u16, 2, '·', "muted");
             }
         }
         if y + 1 < i32::from(l.body_y) || y + 1 >= i32::from(l.body_y + l.body_height) {
-            return;
+            return false;
         }
+        let mut unlabelled = false;
         for (start, end, index) in runs {
-            let inset = u16::from(tapered.get(end as usize).copied().unwrap_or(false));
-            let room = end.saturating_sub(start + 2 + inset);
+            let room = end.saturating_sub(start + 2);
             if room == 0 {
+                unlabelled |= start > 0 && end < l.wave_width && end > start && index > 0;
                 continue;
             }
             let Some(value) = index
@@ -1331,6 +1508,7 @@ impl Viewer {
             };
             let label = display_value(value, radix);
             let size = label.width();
+            unlabelled |= size > usize::from(room) && start > 0 && end < l.wave_width;
             // Labels are atomic: never clip, abbreviate, overlap a boundary, or
             // spill into the neighboring transfer. Narrow intervals stay empty.
             if size > 0 && size <= usize::from(room) {
@@ -1346,6 +1524,7 @@ impl Viewer {
                 );
             }
         }
+        unlabelled
     }
 
     fn draw_compact_bus(
@@ -1355,6 +1534,7 @@ impl Viewer {
         signal: usize,
         radix: Radix,
         role: &'static str,
+        samples: &[Sample],
     ) {
         let l = self.layout();
         if y < i32::from(l.body_y) || y >= i32::from(l.body_y + l.body_height) {
@@ -1362,43 +1542,29 @@ impl Viewer {
         }
         let y = y as u16;
         let trace = &self.wave.traces[self.wave.signals[signal].trace];
-        let samples: Vec<_> = (0..l.wave_width)
-            .map(|dx| trace.index_at(self.time_at(l.wave_x + dx)))
-            .collect();
         let mut runs = vec![];
         let mut start = 0;
         let mut previous = trace.index_at(self.session.start);
         canvas.fill(l.wave_x, y, l.wave_width, "muted", "panel");
-        for (dx, &index) in samples.iter().enumerate() {
+        for (dx, sample) in samples.iter().enumerate() {
+            let index = sample.index;
             let dx = dx as u16;
             let value = index
                 .checked_sub(1)
                 .and_then(|i| trace.changes.get(i))
                 .map(|c| &c.value);
-            let rail = value.map(|v| value_role(v, "muted")).unwrap_or("muted");
-            canvas.character(l.wave_x + dx, y, '═', rail);
+            let rail = value.map(|v| value_role(v, role)).unwrap_or("muted");
+            canvas.character(l.wave_x + dx, y, '─', rail);
             if index != previous {
-                let dense = index.saturating_sub(previous) > 1;
-                let taper = !dense
-                    && dx >= 2
-                    && samples[usize::from(dx - 2)] == previous
-                    && samples
-                        .get(usize::from(dx + 1))
-                        .is_none_or(|next| *next == index);
-                if taper {
-                    canvas.character(l.wave_x + dx - 1, y, '>', rail);
-                    canvas.character(l.wave_x + dx, y, '<', rail);
-                } else {
-                    canvas.character(l.wave_x + dx, y, if dense { '┆' } else { '│' }, rail);
-                }
-                runs.push((start, dx, previous, u16::from(taper)));
+                canvas.character(l.wave_x + dx, y, '┼', rail);
+                runs.push((start, dx, previous));
                 start = dx;
             }
             previous = index;
         }
-        runs.push((start, l.wave_width, previous, 0));
-        for (start, end, index, cap) in runs {
-            let room = end.saturating_sub(start + 4 + cap);
+        runs.push((start, l.wave_width, previous));
+        for (start, end, index) in runs {
+            let room = end.saturating_sub(start + 2);
             let Some(value) = index
                 .checked_sub(1)
                 .and_then(|i| trace.changes.get(i))
@@ -1411,16 +1577,17 @@ impl Viewer {
             if size == 0 || size > room {
                 continue;
             }
-            let x = l.wave_x + start + 2 + (room - size) / 2;
-            canvas.text(
-                x - 1,
-                y,
-                size + 2,
-                &format!(" {label} "),
-                value_role(value, role),
-                "panel",
-                false,
-            );
+            let x = l.wave_x + start + 1 + (room - size) / 2;
+            canvas.text(x, y, size, &label, value_role(value, role), "panel", false);
+        }
+        for (dx, sample) in samples.iter().enumerate() {
+            if let Some(glyph) = sample
+                .activity
+                .glyph()
+                .or((sample.index == 0).then_some('·'))
+            {
+                canvas.character(l.wave_x + dx as u16, y, glyph, "muted");
+            }
         }
     }
 
@@ -1477,9 +1644,7 @@ impl Viewer {
             return;
         }
         let time = self.hover_time(hover);
-        let Some(value) = self.watch_value(row.watch, row.bit, time) else {
-            return;
-        };
+        let value = self.watch_value(row.watch, row.bit, time);
         let Some(Watch::Signal { radix, bit, .. }) = self.session.watches.get(row.watch) else {
             return;
         };
@@ -1488,35 +1653,65 @@ impl Viewer {
         } else {
             *radix
         };
-        let label = display_value(&value, radix);
-        let title = format!(
-            "{}  ·  @ {}",
-            if hover.x < l.wave_x {
-                self.full_watch_label(row)
-            } else {
+        let label = value
+            .as_ref()
+            .map(|value| display_value(value, radix))
+            .unwrap_or_else(|| "No recorded value".into());
+        let transition = self.hover_transition(hover);
+        let title = if let Some((edge, _, _)) = &transition {
+            format!(
+                "Edge @ {} · {}",
+                self.wave.timescale.format(*edge),
                 self.watch_label(row)
-            },
-            self.wave.timescale.format(time)
-        );
-        let detail = self
-            .signal_id(row.watch)
-            .and_then(|id| {
-                let trace = &self.wave.traces[self.wave.signals[id].trace];
-                let i = trace.index_at(time).checked_sub(1)?;
-                let start = trace.changes[i].time;
-                let end = trace
-                    .changes
-                    .get(i + 1)
-                    .map(|c| c.time)
-                    .unwrap_or(self.wave.end);
-                Some(format!(
-                    "{} → {}  ·  held {}",
-                    self.wave.timescale.format(start),
-                    self.wave.timescale.format(end),
-                    self.wave.timescale.format(end.saturating_sub(start))
-                ))
-            })
-            .unwrap_or_default();
+            )
+        } else {
+            format!(
+                "{} @ {} · {}",
+                if hover.x < l.wave_x {
+                    "Cursor A"
+                } else {
+                    "Pointer"
+                },
+                self.wave.timescale.format(time),
+                if hover.x < l.wave_x {
+                    self.full_watch_label(row)
+                } else {
+                    self.watch_label(row)
+                }
+            )
+        };
+        let activity = self.hover_activity(hover);
+        let detail = if transition.is_some() {
+            format!(
+                "{} @ {} · At edge = After",
+                if hover.x < l.wave_x {
+                    "Cursor A"
+                } else {
+                    "Pointer"
+                },
+                self.wave.timescale.format(time)
+            )
+        } else {
+            self.signal_id(row.watch)
+                .and_then(|id| {
+                    let trace = &self.wave.traces[self.wave.signals[id].trace];
+                    let (start, end) =
+                        trace.held_interval(time, row.bit.or(*bit), self.wave.end)?;
+                    Some(format!(
+                        "{} → {}  ·  held {}",
+                        self.wave.timescale.format(start),
+                        self.wave.timescale.format(end),
+                        self.wave.timescale.format(end.saturating_sub(start))
+                    ))
+                })
+                .unwrap_or_else(|| {
+                    if value.is_some() {
+                        "Held interval unresolved at this scale".into()
+                    } else {
+                        "No sample has been recorded at this time".into()
+                    }
+                })
+        };
         if hover.x >= l.wave_x {
             for y in l.body_y..l.body_y + l.body_height {
                 if let Some(cell) = canvas.get(hover.x, y) {
@@ -1530,25 +1725,65 @@ impl Viewer {
                 }
             }
         }
-        if l.wave_width < 28 || l.body_height < 9 {
+        if self.inspector_height() > 0 || l.wave_width < 28 || l.body_height < 9 {
             return;
         }
+        let readouts = if let Some((_, before, after)) = &transition {
+            vec![
+                (
+                    format!(
+                        "Before {}  {}",
+                        radix.label().to_uppercase(),
+                        display_value(before, radix)
+                    ),
+                    value_role(before, "muted"),
+                ),
+                (
+                    format!(
+                        "After  {}  {}",
+                        radix.label().to_uppercase(),
+                        display_value(after, radix)
+                    ),
+                    value_role(after, "accent"),
+                ),
+            ]
+        } else {
+            vec![(
+                format!("{}  {label}", radix.label().to_uppercase()),
+                value
+                    .as_ref()
+                    .map(|value| value_role(value, "accent"))
+                    .unwrap_or("muted"),
+            )]
+        };
         let width = (title
             .width()
-            .max(label.width() + radix.label().len() + 3)
+            .max(
+                readouts
+                    .iter()
+                    .map(|(text, _)| text.width())
+                    .max()
+                    .unwrap_or(0),
+            )
             .max(detail.width()) as u16
             + 4)
         .clamp(28, 66)
         .min(l.wave_width);
         let inner = width - 4;
-        let value_lines = wrap_value(
-            &format!("{}  {label}", radix.label().to_uppercase()),
-            inner as usize,
-            3,
-        );
-        let clipped = value_lines.iter().map(|s| s.width()).sum::<usize>()
-            < label.width() + radix.label().len() + 2;
-        let height = 4 + value_lines.len() as u16 + u16::from(clipped);
+        let max_lines = if transition.is_some() {
+            (usize::from(l.body_height.saturating_sub(5)) / 2).clamp(1, 3)
+        } else {
+            3
+        };
+        let mut value_lines = Vec::new();
+        let mut clipped = false;
+        for (text, role) in readouts {
+            let wrapped = wrap_value(&text, usize::from(inner), max_lines);
+            clipped |= wrapped.iter().map(|line| line.width()).sum::<usize>() < text.width();
+            value_lines.extend(wrapped.into_iter().map(|text| (text, role)));
+        }
+        let height =
+            4 + value_lines.len() as u16 + u16::from(clipped) + u16::from(activity.is_some());
         let row_top = i32::from(l.body_y) + i32::from(row.line) - self.scroll as i32;
         let below = (row_top + i32::from(row.height) + 1).max(i32::from(l.body_y)) as u16;
         let fits_below = below + height <= l.body_y + l.body_height;
@@ -1583,32 +1818,39 @@ impl Viewer {
             "panel",
             true,
         );
-        for (i, line) in value_lines.iter().enumerate() {
-            canvas.text(
-                x + 2,
-                y + 2 + i as u16,
-                inner,
-                line,
-                value_role(&value, "accent"),
-                "panel",
-                false,
-            );
+        for (i, (line, role)) in value_lines.iter().enumerate() {
+            canvas.text(x + 2, y + 2 + i as u16, inner, line, role, "panel", false);
         }
         canvas.text(
             x + 2,
-            y + height - 2,
+            y + height - 2 - u16::from(activity.is_some()),
             inner,
             &ellipsize(&detail, inner as usize),
             "muted",
             "panel",
             false,
         );
+        if let Some(activity) = &activity {
+            canvas.text(
+                x + 2,
+                y + height - 2,
+                inner,
+                &ellipsize(activity, inner as usize),
+                "warning",
+                "panel",
+                false,
+            );
+        }
         if clipped {
             canvas.text(
                 x + 2,
-                y + height - 3,
+                y + height - 3 - u16::from(activity.is_some()),
                 inner,
-                "… Ctrl+C copies the full value",
+                if transition.is_some() {
+                    "… Ctrl+C copies the full After value"
+                } else {
+                    "… Ctrl+C copies the full value"
+                },
                 "muted",
                 "panel",
                 false,
@@ -1656,11 +1898,81 @@ impl Viewer {
             return;
         }
         let y = canvas.height - 3;
+        let ruler_y = y - 1;
+        canvas.fill(0, ruler_y, canvas.width, "muted", "panel");
+        canvas.text(
+            l.browser + 1,
+            ruler_y,
+            (l.name + l.value).saturating_sub(2),
+            "Full scale",
+            "muted",
+            "panel",
+            false,
+        );
+        let start = self.wave.timescale.format(self.wave.start);
+        let end = self.wave.timescale.format(self.wave.end);
+        let end_x = canvas
+            .width
+            .saturating_sub(end.width() as u16)
+            .max(l.wave_x);
+        let fit = start.width() + end.width() + 3 <= usize::from(l.wave_width);
+        let step = tick_step(self.wave.end.saturating_sub(self.wave.start), l.wave_width);
+        let mut tick = self.wave.start.div_ceil(step).saturating_mul(step);
+        for _ in 0..128 {
+            if tick > self.wave.end {
+                break;
+            }
+            let x = self.overview_column(tick);
+            let label = self.wave.timescale.format(tick);
+            if label.width() <= usize::from(canvas.width.saturating_sub(x))
+                && (!fit
+                    || x > l.wave_x + start.width() as u16 + 1
+                        && x + label.width() as u16 + 1 < end_x)
+            {
+                canvas.text(
+                    x,
+                    ruler_y,
+                    label.width() as u16,
+                    &label,
+                    "muted",
+                    "panel",
+                    false,
+                );
+            }
+            let next = tick.saturating_add(step);
+            if next <= tick {
+                break;
+            }
+            tick = next;
+        }
+        if fit {
+            canvas.text(
+                l.wave_x,
+                ruler_y,
+                start.width() as u16,
+                &start,
+                "text",
+                "panel",
+                false,
+            );
+            canvas.text(
+                end_x,
+                ruler_y,
+                end.width() as u16,
+                &end,
+                "text",
+                "panel",
+                false,
+            );
+        }
         canvas.text(
             l.browser + 1,
             y,
             (l.name + l.value).saturating_sub(1),
-            "Overview · drag to pan",
+            &ellipsize(
+                "Time navigator",
+                (l.name + l.value).saturating_sub(1) as usize,
+            ),
             "muted",
             "",
             false,
@@ -1845,6 +2157,26 @@ pub(crate) fn ellipsize(text: &str, width: usize) -> String {
     }
     output.push('…');
     output
+}
+
+/// Keep both sides and the direction visible when a transition pair is clipped.
+fn transition_label(before: &str, after: &str, width: usize) -> String {
+    let arrow = if width >= 7 { " → " } else { "→" };
+    if before.width() + after.width() + arrow.width() <= width {
+        return format!("{before}{arrow}{after}");
+    }
+    let room = width.saturating_sub(arrow.width());
+    if room < 2 {
+        return ellipsize("→", width);
+    }
+    let left = (room / 2).min(before.width());
+    let right = (room - left).min(after.width());
+    let left = room.saturating_sub(right).min(before.width());
+    format!(
+        "{}{arrow}{}",
+        ellipsize(before, left),
+        ellipsize(after, right)
+    )
 }
 
 fn wrap_value(text: &str, width: usize, count: usize) -> Vec<String> {

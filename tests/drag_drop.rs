@@ -8,6 +8,7 @@ use vtcode_waveform_viewer::{
 fn viewer(names: &[&str]) -> Viewer {
     let mut v = Viewer::new("transfers.vcd".into(), None);
     v.ready(vcd::parse(include_bytes!("../examples/bus_transfers.vcd")).unwrap());
+    v.session.browser = true;
     v.width = 160;
     v.height = 32;
     v.session.watches = names
@@ -80,9 +81,9 @@ fn browser_drop_previews_the_actual_bus_between_rows_and_commits_once() {
     assert!(v.history.is_empty());
     let preview = v.display_rows();
     assert_eq!(preview.iter().position(|r| r.preview), Some(1));
-    assert_eq!(preview[1].row.height, 1);
+    assert_eq!(preview[1].row.height, 3);
     assert_eq!(
-        preview[2].row.line, 3,
+        preview[2].row.line, 5,
         "existing rows make room for the bus"
     );
     let frame = v.render();
@@ -95,7 +96,7 @@ fn browser_drop_previews_the_actual_bus_between_rows_and_commits_once() {
     assert!(
         frame.lines[usize::from(l.body_y + 2)]
             .iter()
-            .any(|s| s.background == "selection" && s.text.contains('═')),
+            .any(|s| s.background == "selection" && s.text.contains('─')),
         "the proposed row must contain a real waveform on its preview background"
     );
     for _ in 0..30 {

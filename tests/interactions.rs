@@ -10,6 +10,7 @@ use vtcode_waveform_viewer::{
 fn demo() -> Viewer {
     let mut v = Viewer::new("demo.vcd".into(), None);
     v.ready(vcd::parse(include_bytes!("../examples/demo.vcd")).unwrap());
+    v.session.browser = true;
     v.width = 150;
     v.height = 32;
     v
@@ -96,20 +97,26 @@ fn choose(v: &mut Viewer, action: MenuAction) {
 }
 
 #[test]
-fn toolbar_queries_are_centered_clickable_and_commit_one_edit() {
+fn menu_queries_are_centered_clickable_and_commit_one_edit() {
     for (action, prompt, input) in [
         ("group", Prompt::Group, "AXI control"),
         ("marker", Prompt::Marker, "Handshake"),
     ] {
         let mut v = demo();
         let original = v.session.clone();
+        let category = if action == "group" {
+            vtcode_waveform_viewer::workbench::MainMenu::Signal
+        } else {
+            vtcode_waveform_viewer::workbench::MainMenu::Cursors
+        };
         let button = v
-            .toolbar()
+            .main_menus()
             .into_iter()
-            .find(|b| b.action == action)
+            .find(|b| b.menu == category)
             .unwrap();
-        pointer(&mut v, "down", button.x + 1, 1);
-        pointer(&mut v, "up", button.x + 1, 1);
+        pointer(&mut v, "down", button.x + 1, 0);
+        choose(&mut v, MenuAction::Command(action));
+        pointer(&mut v, "up", 0, 0);
         pointer(&mut v, "cancel", 0, 0);
         assert_eq!(v.prompt, Some(prompt));
         let frame = v.render();

@@ -8,6 +8,7 @@ use vtcode_waveform_viewer::{
 fn demo() -> Viewer {
     let mut v = Viewer::new("demo.vcd".into(), None);
     v.ready(vcd::parse(include_bytes!("../examples/demo.vcd")).unwrap());
+    v.session.browser = true;
     v.width = 160;
     v.height = 24;
     v.session.cursor = 240;
@@ -289,7 +290,8 @@ fn cursor_guides_keep_bus_text_and_ascii_spaces_intact() {
         *radix = Radix::Ascii;
     }
     let l = v.layout();
-    let before = lines(&v)[usize::from(l.body_y)].clone();
+    let label_y = l.body_y + v.rows()[0].height / 2;
+    let before = lines(&v)[usize::from(label_y)].clone();
     let column = before
         .chars()
         .collect::<Vec<_>>()
@@ -301,7 +303,7 @@ fn cursor_guides_keep_bus_text_and_ascii_spaces_intact() {
     v.session.alt_cursor = Some(900);
     let a = v.column_at(v.session.cursor).unwrap();
     let b = v.column_at(900).unwrap();
-    assert!(lines(&v)[usize::from(l.body_y)].contains("A B "));
+    assert!(lines(&v)[usize::from(label_y)].contains("A B "));
     for y in l.body_y..l.body_y + l.body_height {
         assert_eq!(background(&v, a, y), "selection");
         assert_eq!(background(&v, b, y), "match");

@@ -5,12 +5,33 @@ browse a design hierarchy, and inspect digital buses and analog values alongside
 two time cursors. The viewer never modifies the source dump.
 
 The interaction design takes inspiration from [VaporView](https://github.com/Lramseyer/vaporview),
-AMD/Xilinx Vivado's waveform window, and Synopsys Verdi: a hierarchy and signal
-list beside a shared timeline, with transition navigation, measurement cursors,
+AMD/Xilinx Vivado's waveform window, and Synopsys nWave: signal names and cursor
+values beside a shared timeline, with transition navigation, measurement cursors,
 groups, markers, and persistent view configuration. This is an independent Rust
 implementation using VTCode's terminal extension API.
 
 ![Demo terminal frame](docs/preview.png)
+
+The workspace opens with signal names, **Value @ A**, and the waveform timeline.
+**File / Signal / View / Waveform / Cursors / Tools** menus organize commands;
+the hierarchy opens through **Signals** / `/` and closes with its `×` control.
+A graduated full-recording ruler and time navigator keep the zoomed window in
+context. The navigation toolbar exposes
+Fit, Detail, Back, A–B fit, and exact edge stepping. **Back** / Shift+Z restores
+previous zooms and selected ranges without moving either measurement cursor.
+The default value pane fits a full 32-bit **before → after** pair; saved custom
+column widths are preserved.
+For an existing compact saved view, **View → Normal heights for all waves**
+restores square digital edges and full bus envelopes in one undoable edit.
+
+Enable **Inspect** / `v` for detailed measurements. In views of at least 80 × 30
+cells, a docked **Inspector** displays the selected
+or hovered signal's full path, values, recorded interval, and signed B−A time
+difference. Inspection leaves the waveforms visible and clearly labels Pointer,
+A, and B. **Inspect** / `v` toggles the dock and saves the preference. Short views
+use the floating inspector to retain space for the waveform.
+
+![Docked signal and measurement inspector](docs/workspace-inspector.png)
 
 ## Try it in VTCode
 
@@ -34,9 +55,10 @@ Drag a waveform tab to an editor's left, right, top, or bottom edge to create
 a split. The highlighted half previews its placement. Waveform tabs support
 creating the first split directly and moving between existing panes.
 
-The first 12 signals are added automatically. Press `/`, type a signal path,
-then Enter to finish filtering; Enter again adds the selected signal. Tab moves
-between hierarchy and waves. At narrower widths the hierarchy opens on demand.
+The first 12 distinct traces are added automatically; aliases remain available
+in the browser. Press **Signals** or `/` and type a signal path in the inline
+search. Up / Down chooses a result; one Enter adds it and returns to the waves.
+Esc restores the previous filter. Tab moves between hierarchy and waves.
 Drag a signal from **All signals** into the watched list or timeline to place it
 anywhere. A highlighted waveform preview makes room at the proposed insertion
 point. Releasing commits one undoable edit; existing watches move with their
@@ -86,8 +108,11 @@ The **[A] / [B]** handles above the ruler drag either cursor directly. Nearby
 handles stay separate so B remains accessible when both cursors share a time.
 Esc restores the cursor's previous position. Clicking the **snap on / off**
 readout toggles edge snapping; `s` remains available from the keyboard.
+Click the **A / B time fields** to enter an exact time. Middle-click / drag sets
+B; Alt+click / drag is also available. `x` exchanges A and B. Middle-button input
+and double-click recognition require the updated VTCode host API in this workspace.
 
-**Mark**, **Group**, **Rename**, **Find**, **Go to time**, filtering, and session
+**Mark**, **Group**, **Rename**, **Find**, **Go to time**, and session
 import open centered dialogs with a focused text field, visible action and
 Cancel buttons, a close control, and inline validation. Enter applies; Esc,
 Cancel, or clicking outside discards the query. Tab moves between the field
@@ -104,10 +129,10 @@ narrow windows. Home / End jump through the reference, and Esc closes it.
 Each waveform has its own **Small / Normal** size, set from its right-click
 menu. Press `h` to change the selected waveform or selection. Sizes survive moving,
 undo/redo, saving, and reloading; expanded bus bits can be sized independently.
-Single-bit signals start at Normal with clean square transitions across two
-terminal rows. Buses start at Small with a one-row ribbon and distinct transfer
-boundaries. Small single-bit traces also use vertical edges, without slopes.
-Normal buses use three-row outlined envelopes; analog plots use two rows at
+Single-bit signals start at Normal with square transitions across two terminal
+rows. Buses start at Normal with three-row envelopes, straight transfer boundaries,
+and complete values. Small sizes are available explicitly; small single-bit
+traces use vertical edges. Analog plots use two rows at
 Small and three at Normal. Explicit per-wave sizes survive reopening. Older
 saved views with a global density setting use Normal for single-bit signals and
 expanded bus bits, while retaining the previous bus sizes.
@@ -115,8 +140,42 @@ Hex values use readable four-digit groups (`6010_8000`); leading zeros are
 suppressed. A value is drawn only when the whole label fits with space around
 it. Zoom in to resolve short transfers. Hover anywhere on a trace to inspect
 the exact time, value, and recorded interval, including values omitted from the
-trace. The Value column follows the pointer while A/B stay fixed. Ctrl+C copies
-the hovered value; move away to return to the value at A.
+trace. **Value @ A** always shows the exact value at cursor A, including while
+hovering. The separate **Pointer @ time** inspector shows the hovered value;
+Ctrl+C copies it. Hovering the Value column inspects and copies the value at A.
+At a transition, the value column shows **before → after**, keeping both sides
+visible even when the pair needs ellipses. Hover the value or the waveform edge
+to see separate, fully labeled **Before** and **After** values and the exact edge
+time. Before applies strictly before that time; After applies at the timestamp
+and until the next change. Ctrl+C copies After. Auto-fit Values reserves room
+for the complete pair. Expanded bits only report their own changes.
+
+![Before and after values at a transition](docs/edge-inspection.png)
+
+Zooming out pauses at a terminal detail limit: two columns for logic levels and
+enough room for formatted bus values. Press `-` again to continue; **Fit** / `0`
+always shows the entire recording. Compressed cells become an explicit
+**Overview**, with `▒` shading wherever multiple changes share a cell. Pulses
+that return to the same value remain visible, including in expanded bus bits
+and analog plots. Shading represents activity, never a logic level or bus value.
+The timeline header reports the time covered by one terminal cell.
+
+Choose **Detail** (or `i`) to inspect the selected signal around A. To investigate
+a compressed cell anywhere else, hover it and press `i`: the cell's time interval
+fills the timeline, preserving both cursors. Repeat to drill down further.
+Double-clicking a compressed cell performs the same drill-down. Detail also
+reserves space for bus labels; narrow intervals are identified as an overview.
+Left / Right still move to exact transitions even when several share a cell.
+Edge snapping skips compressed cells instead of choosing an arbitrary hidden edge.
+
+![Activity overview with explicit compressed cells](docs/resolution-overview.png)
+
+![Detail around cursor A](docs/resolution-detail.png)
+
+For extremely dense parent buses, resolving an individual bit is bounded to keep
+interaction responsive. A `░` cell explicitly means **unresolved**, rather than
+claiming that bit stayed constant; zoom in to resolve it. A `·` trace means no
+value has been recorded yet, distinct from a simulator's `x` or `z`.
 
 Hover a signal name to see its full hierarchy path, width, type, and format.
 Hover the Value column to inspect and copy that row's exact value at A without
@@ -156,8 +215,8 @@ model as the Wasm extension. Ctrl+S in the preview writes
 - Four-state digital traces with visible X/Z states; collapsed bus values;
   expandable bus bits; analog plots for real or numeric signals. Dense transitions
   are indicated at the current terminal resolution.
-- Outlined bus envelopes with centered, complete labels and pinched transfer
-  joins. Hover inspection, wrapped wide values, and readable measurement guides
+- Straight bus rails with centered, complete labels and vertical transfer
+  boundaries. Hover inspection, wrapped wide values, and readable measurement guides
   preserve the data beneath the pointer and cursors.
 - Binary, hexadecimal, octal, unsigned, signed, and ASCII value display. Integer
   timestamps and zoom calculations preserve precision beyond floating-point time.
@@ -191,8 +250,13 @@ model as the Wasm extension. Ctrl+S in the preview writes
 | Small / Normal size of one waveform | Right-click signal → Waveform size, or `h` |
 | Previous / next transition | Left / Right, or Shift+N / `n` |
 | Next rising / falling transition | `u` / `j`; Shift reverses direction |
-| Move cursor B to an edge | Alt+Left / Right (or Alt with edge keys) |
+| Move cursor B to an edge | Alt+N / Alt+Shift+N, or Alt+click an edge button; VTCode reserves Alt+Left / Right for workbench navigation |
 | Zoom / fit duration | `+` / `-`, `0` or Ctrl+0 |
+| Resolve a readable view around A | **Detail** or `i`; zoom-out pauses at the terminal detail limit, then `-` continues |
+| Return to previous zoom / range | **Back** or Shift+Z |
+| Fit the A–B measurement | **A–B** or `z` |
+| Show / hide the docked inspector | **Inspect** or `v`; docks when the view is at least 80 × 30 |
+| Inspect a compressed cell | Hover it and press `i`; repeat to drill down, with A/B preserved |
 | Pan | Shift+wheel (up = left, down = right), horizontal wheel, wheel over traces, Shift+Left / Right, or Ctrl+drag |
 | Zoom at pointer / preview range zoom | Ctrl+wheel / Shift+drag on traces or the ruler; release applies, Esc cancels |
 | Navigate with the overview | Drag its highlighted viewport; click outside to center; Esc during a drag restores the previous window |
@@ -292,7 +356,7 @@ default; use `--font PATH` on other platforms). `--text` prints a plain frame;
 `WAVE_START` and `WAVE_SPAN` set the time window in source ticks;
 `WAVE_HOVER_X` and `WAVE_HOVER_Y` add a reproducible pointer inspection.
 `WAVE_SIZE=small` or `normal` sets every preview signal to that size; without it,
-the preview shows the usual mix of Normal single-bit signals and Small buses.
+the preview uses Normal sizes for both single-bit signals and buses.
 `WAVE_DRAG_SIGNAL`, with optional `WAVE_DRAG_X` / `WAVE_DRAG_Y`, previews a drop.
 `WAVE_RANGE_START` / `WAVE_RANGE_END` preview a time range in source ticks.
 `WAVE_HELP=1`, with optional `WAVE_HELP_SCROLL`, renders the controls reference.

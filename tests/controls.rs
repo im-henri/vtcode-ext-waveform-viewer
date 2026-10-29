@@ -9,6 +9,7 @@ use vtcode_waveform_viewer::{
 fn demo() -> Viewer {
     let mut v = Viewer::new("demo.vcd".into(), None);
     v.ready(vcd::parse(include_bytes!("../examples/demo.vcd")).unwrap());
+    v.session.browser = true;
     v.width = 180;
     v.height = 32;
     v.session.cursor = 241;
@@ -155,7 +156,7 @@ fn header_menu_fits_columns_resets_them_and_keeps_selection() {
     assert!(v.session.value_width >= 11);
     pointer(&mut v, "contextMenu", x, 3);
     menu(&mut v, MenuAction::ResetColumns);
-    assert_eq!((v.session.name_width, v.session.value_width), (28, 13));
+    assert_eq!((v.session.name_width, v.session.value_width), (28, 23));
     assert_eq!(v.session.watches, before.watches);
     let history = v.history.len();
     pointer(&mut v, "contextMenu", x, 3);
@@ -182,7 +183,7 @@ fn value_auto_fit_respects_full_formatted_values_and_saved_widths_migrate() {
     old.as_object_mut().unwrap().remove("value_width");
     v.restore(serde_json::from_value(old.clone()).unwrap())
         .unwrap();
-    assert_eq!(v.session.value_width, 13);
+    assert_eq!(v.session.value_width, 23);
     for (value, expected) in [(0, 7), (65535, 64)] {
         old["value_width"] = value.into();
         v.restore(serde_json::from_value(old.clone()).unwrap())
@@ -474,6 +475,8 @@ fn menu_scrollbar_drag_reaches_lower_actions_and_keeps_enter_target_visible() {
 #[test]
 fn format_badges_and_adaptive_values_do_not_overlap_or_require_more_rows() {
     let mut v = demo();
+    v.selection = 11;
+    v.ensure_selection();
     let rows = v.rows();
     let rendered = text(&v);
     assert!(rendered.contains("HEX") && rendered.contains("ANLG"));

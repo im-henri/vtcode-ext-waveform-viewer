@@ -12,6 +12,7 @@ pub enum MenuTarget {
     Watch { watch: usize, bit: Option<u32> },
     Browser { signal: usize },
     Columns,
+    Main(crate::workbench::MainMenu),
 }
 #[derive(Clone, Debug)]
 pub struct ContextMenu {
@@ -41,6 +42,7 @@ pub enum MenuAction {
     FitNames,
     FitValues,
     ResetColumns,
+    Command(&'static str),
 }
 pub struct MenuItem {
     pub label: &'static str,
@@ -51,7 +53,7 @@ pub struct MenuItem {
     pub mixed: bool,
 }
 impl MenuItem {
-    fn new(
+    pub(crate) fn new(
         label: &'static str,
         shortcut: &'static str,
         action: MenuAction,
@@ -90,11 +92,10 @@ impl Viewer {
                 item.set_size(None, size);
                 Some(item)
             }
-            MenuTarget::Browser { signal } => Some(self.new_watch(
-                self.wave.signals.get(signal)?,
-                (self.session.watches.len() % PALETTE.len()) as u8,
-            )),
-            MenuTarget::Columns => None,
+            MenuTarget::Browser { signal } => {
+                Some(self.new_watch(self.wave.signals.get(signal)?, 0))
+            }
+            MenuTarget::Columns | MenuTarget::Main(_) => None,
         }
     }
 
@@ -102,6 +103,9 @@ impl Viewer {
         let Some(menu) = &self.context_menu else {
             return vec![];
         };
+        if let MenuTarget::Main(menu) = menu.target {
+            return self.main_menu_items(menu);
+        }
         if matches!(menu.target, MenuTarget::Columns) {
             return vec![
                 MenuItem::heading("Column widths"),
@@ -485,6 +489,9 @@ impl Viewer {
     }
 
     pub(crate) fn menu_event(&mut self, event: &Event) {
+        if self.main_menu_event(event) {
+            return;
+        }
         let items = self.menu_items();
         if event.kind == "cancel" {
             if let Some(menu) = &mut self.context_menu {
@@ -696,6 +703,11 @@ impl Viewer {
         let Some(menu) = self.context_menu.clone() else {
             return;
         };
+        if let MenuAction::Command(command) = action {
+            self.context_menu = None;
+            self.action(command);
+            return;
+        }
         if matches!(action, MenuAction::Colors | MenuAction::Back) {
             if let Some(menu) = &mut self.context_menu {
                 menu.colors = action == MenuAction::Colors;
@@ -762,7 +774,7 @@ impl Viewer {
                 self.session.watches.push(watch);
                 (self.session.watches.len() - 1, None, true)
             }
-            MenuTarget::Columns => return,
+            MenuTarget::Columns | MenuTarget::Main(_) => return,
         };
         self.selection = index;
         self.selected_bit = bit;
@@ -820,7 +832,9 @@ impl Viewer {
             canvas.fill(l.panel.x + l.panel.width, y, 1, "muted", "header");
         }
         draw_panel(canvas, l.panel.x, l.panel.y, l.panel.width, l.panel.height);
-        let title = if matches!(menu.target, MenuTarget::Columns) {
+        let title = if let MenuTarget::Main(menu) = menu.target {
+            menu.name().into()
+        } else if matches!(menu.target, MenuTarget::Columns) {
             "Signals & values".into()
         } else if matches!(menu.target, MenuTarget::Watch { .. }) && self.selection_count() > 1 {
             format!("{} waves selected", self.selection_count())

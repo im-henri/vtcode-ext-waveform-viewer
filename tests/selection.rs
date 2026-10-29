@@ -9,8 +9,9 @@ use vtcode_waveform_viewer::{
 fn demo() -> Viewer {
     let mut v = Viewer::new("demo.vcd".into(), None);
     v.ready(vcd::parse(include_bytes!("../examples/demo.vcd")).unwrap());
+    v.session.browser = true;
     v.width = 180;
-    v.height = 100;
+    v.height = 120;
     v
 }
 fn row(watch: usize, bit: Option<u32>) -> RowKey {
@@ -230,6 +231,9 @@ fn bulk_radix_color_and_analog_changes_are_atomic_and_show_mixed_settings() {
             .unwrap()
             .checked
     );
+    if let Watch::Signal { color, .. } = &mut v.session.watches[5] {
+        *color = 2;
+    }
     choose(&mut v, MenuAction::Colors);
     assert!(v.menu_items().iter().filter(|i| i.mixed).count() >= 2);
     choose(&mut v, MenuAction::Color(7));
@@ -306,7 +310,7 @@ fn expanded_bits_take_part_in_ranges_and_keep_independent_sizes() {
         assert_eq!(v.session.watches[4].size(Some(bit)), WaveSize::Small);
     }
     assert_eq!(v.session.watches[4].size(Some(27)), WaveSize::Normal);
-    assert_eq!(v.session.watches[4].size(None), WaveSize::Small);
+    assert_eq!(v.session.watches[4].size(None), WaveSize::Normal);
     assert_eq!(v.history.len(), 1);
     key(&mut v, "char", "7", false, false);
     assert_eq!(color(&v.session.watches[4]), 6);

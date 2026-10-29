@@ -51,7 +51,7 @@ fn bus_rails_enclose_centered_atomic_labels_and_real_transfers() {
         "#0 b01100000000100001000000000000000 ! #100 b01100000000000001110111101000000 ! #220 b11011110101011011011111011101111 ! #1000",
     );
     // One sample every 10 ns: the first transfer has 10 columns (too narrow
-    // for nine hex characters plus padding and a cap); the second has exactly 12.
+    // for nine hex characters plus padding); the second has exactly 12.
     v.session.span = u64::from(v.layout().wave_width - 1) * 10;
     assert_eq!(v.rows()[0].height, 3);
     let upper = timeline(&v, 0);
@@ -67,15 +67,15 @@ fn bus_rails_enclose_centered_atomic_labels_and_real_transfers() {
         "an exact fit must remain readable"
     );
     assert!(middle.contains("dead_beef"));
-    assert_eq!(upper.chars().skip(9).take(2).collect::<String>(), "╮╭");
-    assert_eq!(lower.chars().skip(9).take(2).collect::<String>(), "╯╰");
-    assert_eq!(middle.chars().skip(9).take(2).collect::<String>(), "├┤");
+    assert_eq!(upper.chars().nth(10), Some('┬'));
+    assert_eq!(lower.chars().nth(10), Some('┴'));
+    assert_eq!(middle.chars().nth(10), Some('│'));
     assert_eq!(
         middle.chars().skip(11).take(9).collect::<String>(),
         "6000_ef40"
     );
-    assert!(upper.chars().all(|ch| matches!(ch, '─' | '╮' | '╭')));
-    assert!(lower.chars().all(|ch| matches!(ch, '─' | '╯' | '╰')));
+    assert!(upper.chars().all(|ch| matches!(ch, '─' | '┬')));
+    assert!(lower.chars().all(|ch| matches!(ch, '─' | '┴')));
 }
 
 #[test]
@@ -93,7 +93,8 @@ fn hover_reveals_omitted_values_without_moving_measurements_and_can_copy_them() 
     point(&mut v, l.wave_x + 2, l.body_y + 1);
     let inspected = lines(&v).join("\n");
     assert!(inspected.contains("HEX  6010_8000"));
-    assert!(inspected.contains("Value @ t"));
+    assert!(inspected.contains("Value @ A"));
+    assert!(inspected.contains("Pointer @"));
     assert_eq!(v.session, session);
     assert_eq!(v.history.len(), history);
     v.event(Event {
@@ -168,7 +169,7 @@ fn toolbar_hits_match_adaptive_labels_and_narrow_tree_opens_on_the_first_click()
     let tree = v
         .toolbar()
         .into_iter()
-        .find(|b| b.action == "browser")
+        .find(|b| b.action == "add_signals")
         .unwrap();
     v.event(Event {
         kind: "down".into(),
@@ -176,6 +177,13 @@ fn toolbar_hits_match_adaptive_labels_and_narrow_tree_opens_on_the_first_click()
         view_row: 1,
         ..Event::default()
     });
+    assert!(v.layout().browser > 0);
+    v.event(Event {
+        code: "tab".into(),
+        ..Event::default()
+    });
+    assert_eq!(v.layout().browser, 0);
+    v.action("browser");
     assert!(v.layout().browser > 0);
     v.action("browser");
     assert_eq!(v.layout().browser, 0);
@@ -286,8 +294,8 @@ fn unresolved_transfers_are_visible_and_do_not_invent_a_stable_value_label() {
     let v = bus(&body);
     let upper = timeline(&v, 0);
     let middle = timeline(&v, 1);
-    assert!(upper.matches('┬').count() > 30);
-    assert!(middle.matches('┆').count() > 30);
+    assert!(upper.matches('▒').count() > 30);
+    assert!(middle.matches('▒').count() > 30);
     assert!(!middle.contains('0') && !middle.contains('1'));
     assert!(!upper.contains('╳') && !middle.contains('╳'));
     assert_eq!(display_value(&Value::Bits("0".repeat(32)), Radix::Hex), "0");
@@ -316,7 +324,7 @@ fn dense_scalar_pulses_show_activity_instead_of_a_false_constant_level() {
     for size in [WaveSize::Small, WaveSize::Normal] {
         v.session.watches[0].set_size(None, size);
         for line in 0..v.rows()[0].height as usize {
-            assert!(timeline(&v, line).matches('┆').count() > 30);
+            assert!(timeline(&v, line).matches('▒').count() > 30);
             assert!(!timeline(&v, line).contains('╳'));
         }
     }

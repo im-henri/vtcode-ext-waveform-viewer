@@ -1,7 +1,7 @@
 //! Geometry and gestures for column dividers, cursor handles and scrollbars.
 use crate::navigation::scrollbar;
 use crate::render::display_value;
-use crate::viewer::{Event, Focus, Viewer};
+use crate::viewer::{Event, Focus, Prompt, Viewer};
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,9 +117,24 @@ impl Viewer {
             .alt_cursor
             .map(|t| self.wave.timescale.format(t.abs_diff(self.session.cursor)))
             .unwrap_or_else(|| "—".into());
-        let x = 1 + format!("A {a}   B {b}   Δ {delta}   {}", self.window_readout()).width();
+        let x = 1 + format!("[A {a}]  [B {b}]  Δ {delta}   {}", self.window_readout()).width();
         let width = if self.session.snap { 7 } else { 8 };
         (x + usize::from(width) < usize::from(self.width.min(512))).then_some((x as u16, width))
+    }
+
+    pub fn cursor_readouts(&self) -> Vec<(u16, u16, bool)> {
+        let a = format!("[A {}]", self.wave.timescale.format(self.session.cursor));
+        let b = format!(
+            "[B {}]",
+            self.session
+                .alt_cursor
+                .map(|time| self.wave.timescale.format(time))
+                .unwrap_or_else(|| "—".into())
+        );
+        vec![
+            (1, a.width() as u16, false),
+            (a.width() as u16 + 3, b.width() as u16, true),
+        ]
     }
 
     pub(crate) fn scroll_bar(&self, pane: ScrollPane) -> Option<Scrollbar> {
@@ -155,6 +170,15 @@ impl Viewer {
     pub(crate) fn begin_control(&mut self, event: &Event) -> bool {
         let l = self.layout();
         let (x, y) = (event.view_column, event.view_row);
+        if y == 2
+            && let Some((_, _, alt)) = self
+                .cursor_readouts()
+                .into_iter()
+                .find(|(start, width, _)| x >= *start && x < start + width)
+        {
+            self.open_prompt(if alt { Prompt::GotoB } else { Prompt::Goto });
+            return true;
+        }
         if y == 2
             && self
                 .snap_control()
@@ -410,6 +434,17 @@ impl Viewer {
         let hover = self.hover?;
         let l = self.layout();
         if hover.y == 2
+            && let Some((_, _, alt)) = self
+                .cursor_readouts()
+                .into_iter()
+                .find(|(x, width, _)| hover.x >= *x && hover.x < x + width)
+        {
+            return Some(format!(
+                "Set cursor {} to an exact time · Click to edit · The other cursor stays fixed",
+                if alt { "B" } else { "A" }
+            ));
+        }
+        if hover.y == 2
             && self
                 .snap_control()
                 .is_some_and(|(x, width)| hover.x >= x && hover.x < x + width)
@@ -465,7 +500,7 @@ impl Viewer {
         let (mut name_width, mut value_width) = (self.session.name_width, self.session.value_width);
         if reset {
             name_width = 28;
-            value_width = 13;
+            value_width = 23;
         } else {
             if names {
                 name_width = self
@@ -500,16 +535,16 @@ impl Viewer {
                         };
                         self.watch_value(index, None, self.session.cursor)
                             .map(|value| {
-                                display_value(
-                                    &value,
-                                    if bit.is_some() {
-                                        crate::model::Radix::Binary
-                                    } else {
-                                        *radix
-                                    },
-                                )
-                                .width()
-                                    + 2
+                                let radix = if bit.is_some() {
+                                    crate::model::Radix::Binary
+                                } else {
+                                    *radix
+                                };
+                                let before = self
+                                    .transition_values(index, None, self.session.cursor)
+                                    .map(|(before, _)| display_value(&before, radix).width() + 3)
+                                    .unwrap_or(0);
+                                before + display_value(&value, radix).width() + 2
                             })
                     })
                     .max()

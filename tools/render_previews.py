@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--case", action="append", help="Render only named cases (repeatable)")
     args = parser.parse_args()
     subprocess.run(
         ["cargo", "build", "--locked", *(["--offline"] if args.offline else []), "--example", "preview"],
@@ -21,12 +22,19 @@ def main():
     executable = ROOT / "target/debug/examples" / ("preview.exe" if os.name == "nt" else "preview")
     common = {"WIDTH": "180", "HEIGHT": "28", "START": "200", "SPAN": "600"}
     cases = [
-        ("preview", "demo.vcd", {}),
+        ("preview", "demo.vcd", {"HEIGHT": "44"}),
+        ("nwave-workbench", "bus_transfers.vcd", {"WIDTH": "180", "HEIGHT": "44"}),
+        ("nwave-menu", "bus_transfers.vcd", {"MAIN_MENU": "View", "HEIGHT": "38"}),
+        ("nwave-search", "bus_transfers.vcd", {"QUERY": "filter", "QUERY_TEXT": "wdata", "HEIGHT": "38"}),
+        ("resolution-overview", "demo.vcd", {"WIDTH": "150", "HEIGHT": "36", "START": "0", "SPAN": "1000"}),
+        ("resolution-detail", "demo.vcd", {"WIDTH": "150", "HEIGHT": "36", "START": "0", "SPAN": "1000", "DETAIL": "1"}),
+        ("workspace-inspector", "bus_transfers.vcd", {"WIDTH": "180", "HEIGHT": "38", "CURSOR": "420", "CURSOR_B": "240", "SELECT": "5", "INSPECTOR": "1"}),
         ("drag-preview", "demo.vcd", {"DRAG_SIGNAL": "wdata", "DRAG_Y": "8"}),
-        ("hover", "bus_transfers.vcd", {"HOVER_X": "120", "HOVER_Y": "14"}),
+        ("hover", "bus_transfers.vcd", {"HOVER_SIGNAL": "ex_reg_wdata", "HOVER_TIME": "500"}),
+        ("edge-inspection", "bus_transfers.vcd", {"CURSOR": "420", "CURSOR_B": "240", "VALUE_WIDTH": "24", "HOVER_SIGNAL": "ex_reg_wdata", "HOVER_REGION": "value"}),
         ("normal", "bus_transfers.vcd", {"SIZE": "normal", "HEIGHT": "28"}),
         ("range-preview", "bus_transfers.vcd", {"RANGE_START": "360", "RANGE_END": "620"}),
-        ("signal-details", "demo.vcd", {"HOVER_X": "44", "HOVER_Y": "10"}),
+        ("signal-details", "demo.vcd", {"HOVER_SIGNAL": "wdata", "HOVER_REGION": "name"}),
         ("help", "demo.vcd", {"HELP": "1", "WIDTH": "100"}),
         ("help-narrow", "demo.vcd", {"HELP": "1", "WIDTH": "80"}),
         ("signal-menu", "demo.vcd", {"MENU_SIGNAL": "wdata", "WIDTH": "150", "HEIGHT": "32"}),
@@ -41,6 +49,8 @@ def main():
     ]
     (ROOT / "screenshots").mkdir(exist_ok=True)
     for name, source, options in cases:
+        if args.case and name not in args.case:
+            continue
         env = {key: value for key, value in os.environ.items() if not key.startswith("WAVE_")}
         env.update({f"WAVE_{key}": value for key, value in (common | options).items()})
         output = subprocess.run(

@@ -61,6 +61,34 @@ pub struct DialogLayout {
 
 impl Viewer {
     pub fn dialog_layout(&self) -> DialogLayout {
+        let browser = self.layout().browser;
+        if self.prompt == Some(Prompt::Filter) && browser > 0 {
+            let input = PopupRect {
+                x: 1,
+                y: 4,
+                width: browser.saturating_sub(4),
+                height: 1,
+            };
+            let close = PopupRect {
+                x: browser.saturating_sub(3),
+                y: 3,
+                width: 2,
+                height: 1,
+            };
+            return DialogLayout {
+                panel: PopupRect {
+                    x: 0,
+                    y: 3,
+                    width: browser,
+                    height: self.layout().body_height + 2,
+                },
+                field: input,
+                input,
+                close,
+                cancel: PopupRect::default(),
+                submit: PopupRect::default(),
+            };
+        }
         let width = self.width.min(512);
         let height = self.height.min(200);
         let w = if width >= 20 { width - 4 } else { width }.min(72);
@@ -139,6 +167,10 @@ impl Viewer {
 
     fn submit_dialog(&mut self) {
         let Some(prompt) = self.prompt else { return };
+        if prompt == Prompt::Filter {
+            self.submit_filter(false);
+            return;
+        }
         if prompt == Prompt::FindValue && self.input.trim().is_empty() {
             self.fail("Enter the value to find");
         } else if self.commit_prompt(prompt).is_ok() {
@@ -149,8 +181,99 @@ impl Viewer {
         }
     }
 
+    fn finish_filter(&mut self) {
+        self.prompt = None;
+        self.input.clear();
+        self.dialog = DialogState::default();
+        self.error = false;
+    }
+
+    fn submit_filter(&mut self, recursive: bool) {
+        let Some(node) = self.browser_nodes.get(self.browser_selection).cloned() else {
+            self.fail("No matching signals · Edit the filter or press Esc");
+            return;
+        };
+        if matches!(node, crate::viewer::BrowserNode::Scope(..)) && !recursive {
+            self.browser_activate(false);
+            return;
+        }
+        self.finish_filter();
+        self.browser_activate(recursive);
+        self.focus = Focus::Waves;
+    }
+
     pub(crate) fn dialog_event(&mut self, event: &Event) {
         let Some(prompt) = self.prompt else { return };
+        let inline_filter = prompt == Prompt::Filter && self.layout().browser > 0;
+        if inline_filter {
+            let l = self.dialog_layout();
+            if event.kind == "down"
+                && event.view_row == 4
+                && event.view_column >= self.layout().browser.saturating_sub(3)
+                && event.view_column < self.layout().browser
+                && !self.filter.is_empty()
+            {
+                self.input.clear();
+                self.filter.clear();
+                self.dialog.cursor = 0;
+                self.dialog.select_all = false;
+                self.browser_selection = 0;
+                self.browser_scroll = 0;
+                self.rebuild_browser();
+                return;
+            }
+            if event.kind.is_empty() && matches!(event.code.as_str(), "tab" | "backTab") {
+                self.finish_filter();
+                self.focus = Focus::Waves;
+                return;
+            }
+            if matches!(event.kind.as_str(), "down" | "contextMenu")
+                && !l.field.contains(event.view_column, event.view_row)
+            {
+                if l.close.contains(event.view_column, event.view_row) {
+                    self.cancel_prompt();
+                    self.session.browser = false;
+                    self.focus = Focus::Waves;
+                } else {
+                    self.finish_filter();
+                    self.event(event.clone());
+                }
+                return;
+            }
+            if event.direction != 0 || event.kind == "move" {
+                self.prompt = None;
+                self.event(event.clone());
+                self.prompt = Some(Prompt::Filter);
+                return;
+            }
+            if event.kind.is_empty()
+                && matches!(event.code.as_str(), "up" | "down" | "pageUp" | "pageDown")
+            {
+                let step = if event.code.starts_with("page") {
+                    usize::from(self.layout().body_height).max(1)
+                } else {
+                    1
+                };
+                self.browser_selection = if matches!(event.code.as_str(), "up" | "pageUp") {
+                    self.browser_selection.saturating_sub(step)
+                } else {
+                    self.browser_selection
+                        .saturating_add(step)
+                        .min(self.browser_nodes.len().saturating_sub(1))
+                };
+                let visible = usize::from(self.layout().body_height).max(1);
+                self.browser_scroll = self.browser_scroll.min(self.browser_selection).max(
+                    self.browser_selection
+                        .saturating_add(1)
+                        .saturating_sub(visible),
+                );
+                return;
+            }
+            if event.kind.is_empty() && event.code == "enter" {
+                self.submit_filter(event.shift);
+                return;
+            }
+        }
         self.dialog.cursor = self.dialog.cursor.min(self.input.len());
         while !self.input.is_char_boundary(self.dialog.cursor) {
             self.dialog.cursor -= 1;
@@ -339,6 +462,55 @@ impl Viewer {
     pub(crate) fn draw_dialog(&self, canvas: &mut Canvas) -> Option<(u16, u16)> {
         let prompt = self.prompt?;
         let l = self.dialog_layout();
+        if prompt == Prompt::Filter && self.layout().browser > 0 {
+            canvas.fill(0, 3, self.layout().browser, "text", "header");
+            canvas.text(
+                1,
+                3,
+                self.layout().browser.saturating_sub(5),
+                "Add signals",
+                "accent",
+                "header",
+                true,
+            );
+            canvas.text(
+                l.close.x,
+                l.close.y,
+                l.close.width,
+                "×",
+                "muted",
+                "header",
+                false,
+            );
+            canvas.fill(l.input.x, l.input.y, l.input.width, "text", "header");
+            let (_, shown, caret) = self.dialog_input_window(l.input.width);
+            canvas.text(
+                l.input.x,
+                l.input.y,
+                l.input.width,
+                if self.input.is_empty() {
+                    "Search signal path…"
+                } else {
+                    &shown
+                },
+                if self.input.is_empty() {
+                    "muted"
+                } else {
+                    "text"
+                },
+                if self.dialog.select_all {
+                    "selection"
+                } else {
+                    "header"
+                },
+                false,
+            );
+            if canvas.height > 0 {
+                canvas.text(1, canvas.height - 1, canvas.width.saturating_sub(2), "↑/↓ choose · Enter adds · Shift+Enter adds scope · Drag to place · Esc cancels", "muted", "", false);
+            }
+            return (l.input.width > 0)
+                .then_some((l.input.x + caret.min(l.input.width - 1), l.input.y));
+        }
         for cell in &mut canvas.cells {
             cell.role = "muted";
             cell.background = "";
@@ -376,7 +548,7 @@ impl Viewer {
             Prompt::FindValue => {
                 "Search the selected signal. Prefix with 0x or 0b to override radix.".into()
             }
-            Prompt::Goto => format!(
+            Prompt::Goto | Prompt::GotoB => format!(
                 "Recording: {} → {}",
                 self.wave.timescale.format(self.wave.start),
                 self.wave.timescale.format(self.wave.end)
@@ -423,7 +595,7 @@ impl Viewer {
         let placeholder = match prompt {
             Prompt::Marker => format!("M{}", self.session.markers.len() + 1),
             Prompt::Group => "e.g. AXI write channel".into(),
-            Prompt::Goto => "e.g. 125 ns or 1250 ticks".into(),
+            Prompt::Goto | Prompt::GotoB => "e.g. 125 ns or 1250 ticks".into(),
             Prompt::FindValue => "e.g. 0x34C8, 0b1010, x or z".into(),
             Prompt::Filter => "e.g. tb.dut.wdata".into(),
             Prompt::Import => "Ctrl+V to paste session JSON".into(),
@@ -477,7 +649,7 @@ impl Viewer {
                     Prompt::Filter => " Apply ",
                     Prompt::Import => " Import ",
                     Prompt::FindValue => " Find ",
-                    Prompt::Goto => " Go to ",
+                    Prompt::Goto | Prompt::GotoB => " Go to ",
                     Prompt::Rename => " Rename ",
                     _ => " Create ",
                 },

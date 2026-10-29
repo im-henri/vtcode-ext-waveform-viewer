@@ -387,6 +387,12 @@ impl Waveform {
                     return Err(memory_error(limit));
                 }
                 last.value = value;
+                let length = changes.len();
+                if length >= 2 && changes[length - 2].value == changes[length - 1].value {
+                    let redundant = changes.pop().unwrap();
+                    self.data_bytes = self.data_bytes.saturating_sub(redundant.value.size());
+                    self.change_count -= 1;
+                }
                 return Ok(());
             }
         }

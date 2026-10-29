@@ -18,7 +18,21 @@ impl Viewer {
     /// Rendering and hit testing share the same adaptive toolbar geometry.
     pub fn toolbar(&self) -> Vec<Button> {
         let definitions = [
+            (
+                "Signals",
+                "add_signals",
+                "Find and add signals · /",
+                self.layout().browser > 0,
+                0,
+            ),
             ("Fit", "fit", "Fit the entire recording · 0", false, 0),
+            (
+                "Detail",
+                "detail",
+                "Resolve the selected signal around cursor A · i",
+                false,
+                60,
+            ),
             (
                 "+",
                 "zoom_in",
@@ -34,16 +48,30 @@ impl Viewer {
                 0,
             ),
             (
+                "Back",
+                "zoom_back",
+                "Restore the previous zoom or range · Shift+Z",
+                false,
+                100,
+            ),
+            (
+                "A–B",
+                "fit_cursors",
+                "Fit the time range between A and B · z",
+                false,
+                100,
+            ),
+            (
                 "‹",
                 "previous",
-                "Previous transition of the selected signal · ←",
+                "Previous transition · ← · Alt+click steps B",
                 false,
                 0,
             ),
             (
                 "›",
                 "next",
-                "Next transition of the selected signal · →",
+                "Next transition · → · Alt+click steps B",
                 false,
                 0,
             ),
@@ -70,6 +98,13 @@ impl Viewer {
                 60,
             ),
             (
+                "Inspect",
+                "inspector",
+                "Show or hide the docked value inspector · v",
+                self.inspector_height() > 0,
+                100,
+            ),
+            (
                 "Save",
                 "save",
                 "Save signals, cursors, markers and zoom · Ctrl+S",
@@ -89,7 +124,19 @@ impl Viewer {
         let mut buttons = Vec::new();
         let mut x: u16 = 1;
         for (label, action, hint, active, minimum) in definitions {
-            let group_gap = u16::from(matches!(action, "find" | "browser" | "save"));
+            if matches!(action, "group" | "marker" | "browser" | "save" | "reload") {
+                continue;
+            }
+            if action == "inspector" && self.height < 30 {
+                continue;
+            }
+            let label = match action {
+                "previous" if width >= 120 => "‹Edge",
+                "next" if width >= 120 => "Edge›",
+                _ => label,
+            };
+            let group_gap =
+                u16::from(matches!(action, "previous" | "find" | "browser" | "save")) * 2;
             let size = label.width() as u16 + 2;
             if width < minimum || x + group_gap + size + 5 > width {
                 continue;
@@ -98,15 +145,17 @@ impl Viewer {
             buttons.push(Button {
                 x,
                 width: size,
-                label: format!(" {label} "),
+                label: format!("[{label}]"),
                 action,
                 hint,
                 active,
                 enabled: self.loading.is_none()
                     && match action {
-                        "previous" | "next" | "find" => self.selected().is_some(),
+                        "previous" | "next" | "find" | "detail" => self.selected().is_some(),
                         "zoom_in" => self.session.span > 1,
                         "zoom_out" => self.session.span < duration,
+                        "zoom_back" => !self.view_history.is_empty(),
+                        "fit_cursors" => self.session.alt_cursor.is_some(),
                         _ => true,
                     },
             });
@@ -116,7 +165,7 @@ impl Viewer {
             buttons.push(Button {
                 x: width - 4,
                 width: 3,
-                label: " ? ".into(),
+                label: "[?]".into(),
                 action: "help",
                 hint: "Keyboard and mouse reference · ?",
                 active: self.help,
@@ -126,12 +175,19 @@ impl Viewer {
         buttons
     }
 
-    pub fn event(&mut self, event: Event) {
+    pub fn event(&mut self, mut event: Event) {
+        if event.button == "middle" {
+            event.alt = true;
+            event.shift = false;
+            event.control = false;
+            event.ctrl = false;
+        }
         // Passive inspection must not dismiss errors, change selection, or enter undo history.
         if self.prompt.is_none() && event.kind != "move" && event.kind != "leave" {
             self.error = false;
             if !(event.control && event.text.eq_ignore_ascii_case("c")
-                || event.code == "command" && event.text == "copy")
+                || event.code == "command" && event.text == "copy"
+                || event.code == "char" && event.text == "i")
             {
                 self.hover = None;
             }
@@ -416,6 +472,10 @@ impl Viewer {
             "+" | "=" => self.zoom(true, self.session.cursor),
             "-" | "_" => self.zoom(false, self.session.cursor),
             "0" => self.fit(),
+            "i" => self.inspect_detail(),
+            "v" => self.action("inspector"),
+            ":" => self.open_main_menu(crate::workbench::MainMenu::All),
+            "x" => self.action("swap_cursors"),
             "n" | "N" => self.edge(event.shift || event.text == "N", event.alt, None),
             "p" => self.edge(true, event.alt, None),
             "u" => self.edge(event.shift, event.alt, Some('1')),
@@ -466,16 +526,9 @@ impl Viewer {
             "s" => {
                 self.toggle_snap();
             }
-            "z" => {
-                if let Some(alt) = self.session.alt_cursor {
-                    self.session.start = alt.min(self.session.cursor);
-                    self.session.span = alt.abs_diff(self.session.cursor).max(1);
-                    self.clamp_window();
-                } else {
-                    self.status =
-                        "Place cursor B with Alt+click or B, then press z to fit A–B".into();
-                }
-            }
+            "z" if event.shift => self.zoom_back(),
+            "z" => self.fit_cursors(),
+            "Z" => self.zoom_back(),
             "d" => {
                 if self.session.watches.len() < crate::viewer::MAX_WATCHES {
                     self.checkpoint();
@@ -497,7 +550,105 @@ impl Viewer {
     }
     pub fn action(&mut self, action: &str) {
         match action {
+            "menu_file" => self.open_main_menu(crate::workbench::MainMenu::File),
+            "menu_signal" => self.open_main_menu(crate::workbench::MainMenu::Signal),
+            "menu_view" => self.open_main_menu(crate::workbench::MainMenu::View),
+            "menu_waveform" => self.open_main_menu(crate::workbench::MainMenu::Waveform),
+            "menu_cursors" => self.open_main_menu(crate::workbench::MainMenu::Cursors),
+            "menu_tools" => self.open_main_menu(crate::workbench::MainMenu::Tools),
+            "add_signals" => {
+                self.open_prompt(Prompt::Filter);
+                self.session.browser = true;
+                self.focus = Focus::Browser;
+            }
+            "goto" => self.open_prompt(Prompt::Goto),
+            "goto_b" => self.open_prompt(Prompt::GotoB),
+            "b_at_a" => self.session.alt_cursor = Some(self.session.cursor),
+            "clear_b" => self.session.alt_cursor = None,
+            "swap_cursors" => {
+                if let Some(b) = self.session.alt_cursor.replace(self.session.cursor) {
+                    self.session.cursor = b;
+                    self.status = "Cursors A and B exchanged · The value pane now follows A".into();
+                } else {
+                    self.session.alt_cursor = None;
+                    self.status = "Set cursor B before exchanging A and B".into();
+                }
+            }
+            "previous_b" => self.edge(true, true, None),
+            "next_b" => self.edge(false, true, None),
+            "rising" => self.edge(false, false, Some('1')),
+            "falling" => self.edge(false, false, Some('0')),
+            "snap" => self.toggle_snap(),
+            "export" => self.export_session(),
+            "import" => self.open_prompt(Prompt::Import),
+            "undo" => self.undo(false),
+            "redo" => self.undo(true),
+            "remove" => self.remove_selected(),
+            "expand" => self.toggle_expand(),
+            "full_paths" => self.session.full_names = !self.session.full_names,
+            "fit_names" => self.fit_columns(true, false, false),
+            "fit_values" => self.fit_columns(false, true, false),
+            "fit_columns" => self.fit_columns(true, true, false),
+            "reset_columns" => self.fit_columns(false, false, true),
+            "signal_display" => self.open_keyboard_menu(),
+            "readable_heights" => {
+                let changes = self.session.watches.iter().any(|watch| matches!(watch, Watch::Signal { size, bit_size, bit_sizes, .. } if *size != WaveSize::Normal || *bit_size != WaveSize::Normal || !bit_sizes.is_empty()));
+                if changes {
+                    self.checkpoint();
+                }
+                for watch in &mut self.session.watches {
+                    if let Watch::Signal {
+                        size,
+                        bit_size,
+                        bit_sizes,
+                        ..
+                    } = watch
+                    {
+                        *size = WaveSize::Normal;
+                        *bit_size = WaveSize::Normal;
+                        bit_sizes.clear();
+                    }
+                }
+                self.ensure_selection();
+                self.status = if changes {
+                    "Normal wave heights applied · Ctrl+Z restores previous sizes"
+                } else {
+                    "All wave heights are already Normal"
+                }
+                .into();
+            }
+            "remove_marker" => {
+                self.checkpoint();
+                self.session
+                    .markers
+                    .retain(|marker| marker.time != self.session.cursor);
+            }
+            "divider" => {
+                if self.session.watches.len() < crate::viewer::MAX_WATCHES {
+                    self.checkpoint();
+                    self.session.watches.insert(
+                        self.selection.min(self.session.watches.len()),
+                        Watch::Divider,
+                    );
+                    self.clear_wave_selection();
+                    self.selected_bit = None;
+                    self.ensure_selection();
+                }
+            }
             "fit" => self.fit(),
+            "detail" => self.detail_at_cursor(),
+            "zoom_back" => self.zoom_back(),
+            "fit_cursors" => self.fit_cursors(),
+            "inspector" => {
+                self.session.inspector = !self.session.inspector;
+                self.ensure_selection();
+                self.status = if self.session.inspector {
+                    "Inspector enabled · Docks in views at least 80 × 30"
+                } else {
+                    "Inspector hidden · Hover shows a value popup · v restores the dock"
+                }
+                .into();
+            }
             "zoom_in" => self.zoom(true, self.session.cursor),
             "zoom_out" => self.zoom(false, self.session.cursor),
             "previous" => self.edge(true, false, None),
@@ -580,7 +731,15 @@ impl Viewer {
                 _ => crate::model::Radix::Binary,
             };
             self.copy_requested = Some(value.format(radix));
-            self.status = "Value copied".into();
+            self.status = if self.transition_values(watch, bit, time).is_some()
+                || self
+                    .hover
+                    .is_some_and(|hover| self.hover_transition(hover).is_some())
+            {
+                "After value copied".into()
+            } else {
+                "Value copied".into()
+            };
         }
     }
     fn export_session(&mut self) {
@@ -602,10 +761,14 @@ impl Viewer {
                 self.search_query = input;
                 self.start_search(false);
             }
-            Prompt::Goto => match self.wave.timescale.parse_time(&input) {
+            Prompt::Goto | Prompt::GotoB => match self.wave.timescale.parse_time(&input) {
                 Ok(time) if time >= self.wave.start && time <= self.wave.end => {
-                    self.session.cursor = time;
-                    self.reveal_cursor();
+                    if prompt == Prompt::GotoB {
+                        self.session.alt_cursor = Some(time);
+                    } else {
+                        self.session.cursor = time;
+                    }
+                    self.reveal_time(time);
                 }
                 Ok(_) => {
                     self.fail("Time is outside the waveform");
@@ -827,6 +990,43 @@ impl Viewer {
         if event.kind == "down" {
             self.signal_drag = None;
             self.cancel_timeline_drag();
+            if event.button == "middle" {
+                if x >= l.wave_x
+                    && x < l.wave_x + l.wave_width
+                    && (y == 4 || y >= l.body_y && y < l.body_y + l.body_height)
+                {
+                    self.focus = Focus::Waves;
+                    self.begin_wave_drag(event, None, false);
+                }
+                return;
+            }
+            if event.click_count == 2
+                && x >= l.wave_x
+                && let Some(row) = self.row_at(y)
+            {
+                let hover = Hover {
+                    x,
+                    y,
+                    row: Some(row),
+                };
+                if self.hover_activity(hover).is_some() {
+                    self.select_wave(row.into(), false, false);
+                    self.hover = Some(hover);
+                    self.inspect_detail();
+                    return;
+                }
+            }
+            if y == 0 {
+                if let Some(menu) = self
+                    .main_menus()
+                    .into_iter()
+                    .find(|b| x >= b.x && x < b.x + b.width)
+                    .map(|b| b.menu)
+                {
+                    self.open_main_menu(menu);
+                }
+                return;
+            }
             if self.begin_control(event) {
                 return;
             }
@@ -834,7 +1034,11 @@ impl Viewer {
                 for button in self.toolbar() {
                     if x >= button.x && x < button.x + button.width {
                         if button.enabled {
-                            self.action(button.action);
+                            match button.action {
+                                "previous" => self.edge(true, event.alt, None),
+                                "next" => self.edge(false, event.alt, None),
+                                _ => self.action(button.action),
+                            }
                         }
                         return;
                     }
@@ -842,7 +1046,10 @@ impl Viewer {
                 return;
             }
             if x < l.browser && (y == 3 || y == 4) {
-                if y == 4 && !self.filter.is_empty() && x >= l.browser.saturating_sub(3) {
+                if y == 3 && x >= l.browser.saturating_sub(3) {
+                    self.session.browser = false;
+                    self.focus = Focus::Waves;
+                } else if y == 4 && !self.filter.is_empty() && x >= l.browser.saturating_sub(3) {
                     self.filter.clear();
                     self.browser_selection = 0;
                     self.browser_scroll = 0;
@@ -855,7 +1062,8 @@ impl Viewer {
                 return;
             }
             if self.height >= 8
-                && y == self.height.min(200).saturating_sub(3)
+                && (self.height.min(200).saturating_sub(4)..=self.height.min(200).saturating_sub(3))
+                    .contains(&y)
                 && x >= l.wave_x
                 && x < l.wave_x + l.wave_width
             {
@@ -921,29 +1129,30 @@ impl Viewer {
                 (x < l.wave_x && !split).then_some(self.selection),
                 split,
             );
-        } else if event.kind == "drag" {
-            if let Some(drag) = self.drag {
-                let end = self.time_at(x);
-                if let Some(active) = &mut self.drag {
-                    active.end = end;
-                    active.end_x = x.clamp(l.wave_x, l.wave_x + l.wave_width.saturating_sub(1));
-                }
-                if drag.split {
-                    self.session.name_width = x.saturating_sub(l.browser).clamp(12, 80);
-                } else if drag.pan {
-                    let shift = ((u128::from(x.abs_diff(drag.x)) * u128::from(drag.span))
-                        / u128::from(l.wave_width.max(1))) as u64;
-                    self.session.start = if x >= drag.x {
-                        drag.start.saturating_sub(shift)
-                    } else {
-                        drag.start.saturating_add(shift)
-                    };
-                    self.clamp_window();
-                } else if drag.watch.is_none() && !drag.zoom {
-                    self.set_cursor(x, drag.alt);
-                }
+        } else if matches!(event.kind.as_str(), "drag" | "up")
+            && let Some(drag) = self.drag
+        {
+            let end = self.time_at(x);
+            if let Some(active) = &mut self.drag {
+                active.end = end;
+                active.end_x = x.clamp(l.wave_x, l.wave_x + l.wave_width.saturating_sub(1));
             }
-        } else if event.kind == "up"
+            if drag.split {
+                self.session.name_width = x.saturating_sub(l.browser).clamp(12, 80);
+            } else if drag.pan {
+                let shift = ((u128::from(x.abs_diff(drag.x)) * u128::from(drag.span))
+                    / u128::from(l.wave_width.max(1))) as u64;
+                self.session.start = if x >= drag.x {
+                    drag.start.saturating_sub(shift)
+                } else {
+                    drag.start.saturating_add(shift)
+                };
+                self.clamp_window();
+            } else if drag.watch.is_none() && !drag.zoom {
+                self.set_cursor(x, drag.alt);
+            }
+        }
+        if event.kind == "up"
             && let Some(drag) = self.drag.take()
         {
             if drag.zoom
@@ -953,6 +1162,7 @@ impl Viewer {
                 && drag.x.abs_diff(x) >= 2
             {
                 let end = self.time_at(x);
+                self.remember_view();
                 self.session.start = end.min(drag.time);
                 self.session.span = end.abs_diff(drag.time).max(1);
                 self.clamp_window();

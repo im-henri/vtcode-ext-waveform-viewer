@@ -7,6 +7,7 @@ use vtcode_waveform_viewer::{
 fn demo() -> Viewer {
     let mut v = Viewer::new("demo.vcd".into(), None);
     v.ready(vcd::parse(include_bytes!("../examples/demo.vcd")).unwrap());
+    v.session.browser = true;
     v.width = 150;
     v.height = 32;
     v
@@ -47,17 +48,18 @@ fn choose(v: &mut Viewer, action: MenuAction) {
 }
 
 #[test]
-fn new_signals_default_to_square_scalar_traces_and_dense_buses() {
-    let v = demo();
+fn new_signals_default_to_square_edges_and_readable_bus_envelopes() {
+    let mut v = demo();
+    v.height = 44;
     let rows = v.rows();
     assert_eq!(rows.len(), 12);
-    assert_eq!(rows.iter().map(|r| r.height).sum::<u16>(), 20);
+    assert_eq!(rows.iter().map(|r| r.height).sum::<u16>(), 30);
     assert!(
         rows.iter()
             .all(|r| r.line + r.height <= v.layout().body_height)
     );
     assert_eq!(rows[0].height, 2);
-    assert_eq!(rows[4].height, 1);
+    assert_eq!(rows[4].height, 3);
     assert_eq!(rows[11].height, 3);
     for row in &rows {
         if let Watch::Signal { path, .. } = &v.session.watches[row.watch]
@@ -95,7 +97,7 @@ fn keyboard_size_changes_only_the_selected_wave_and_round_trips_with_undo() {
     assert_eq!(v.session.cursor, 240);
     for (index, watch) in v.session.watches.iter().enumerate() {
         if index == 8 {
-            assert_eq!(watch.size(None), WaveSize::Normal);
+            assert_eq!(watch.size(None), WaveSize::Small);
         } else {
             assert_eq!(watch, &before.watches[index]);
         }
@@ -177,7 +179,7 @@ fn expanded_bits_have_independent_sizes_that_survive_parent_changes_and_restore(
     }
     v.selected_bit = None;
     key(&mut v, "h");
-    assert_eq!(v.session.watches[watch].size(None), WaveSize::Normal);
+    assert_eq!(v.session.watches[watch].size(None), WaveSize::Small);
     assert_eq!(v.session.watches[watch].size(Some(31)), WaveSize::Small);
     assert_eq!(v.session.watches[watch].size(Some(30)), WaveSize::Normal);
     let json = serde_json::to_string(&v.session).unwrap();
@@ -282,16 +284,16 @@ fn small_bus_keeps_real_boundaries_atomic_values_and_passive_hover() {
     v.height = 24;
     v.session.browser = false;
     v.session.name_width = 12;
+    v.session.watches[0].set_size(None, WaveSize::Small);
     v.session.cursor = 240;
     let l = v.layout();
     v.session.span = u64::from(l.wave_width - 1) * 10;
     let row: String = lines(&v)[5].chars().skip(l.wave_x as usize).collect();
-    assert!(row.contains("><"), "{row}");
+    assert!(row.contains('┼'), "{row}");
+    assert!(!row.contains(['<', '>', '╱', '╲']), "{row}");
     assert!(row.contains("dead_beef"), "{row}");
-    assert!(
-        !row.contains("6010_8000") && !row.contains("6000_ef40"),
-        "cramped labels are omitted"
-    );
+    assert!(!row.contains("6010_8000"), "cramped labels are omitted");
+    assert!(row.contains("6000_ef40"));
     assert_eq!(v.rows()[0].height, 1);
     let before = v.session.clone();
     pointer(&mut v, "move", l.wave_x + 12, l.body_y);
@@ -318,12 +320,12 @@ fn drag_previews_respect_mixed_heights_and_keep_the_dropped_wave_size() {
             .iter()
             .map(|r| r.row.height)
             .collect::<Vec<_>>(),
-        [2, 1, 1, 2]
+        [2, 3, 1, 2]
     );
     pointer(&mut v, "up", l.wave_x + 8, l.body_y + 2);
     assert_eq!(v.session.watches.len(), 4);
     assert!(
-        matches!(&v.session.watches[1], Watch::Signal { path, size: WaveSize::Small, .. } if path.ends_with("wdata[31:0]"))
+        matches!(&v.session.watches[1], Watch::Signal { path, size: WaveSize::Normal, .. } if path.ends_with("wdata[31:0]"))
     );
     v.undo(false);
     assert_eq!(v.session, original);

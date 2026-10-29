@@ -201,7 +201,7 @@ impl Viewer {
             .map(|i| self.session.watches[i].clone())
             .unwrap_or_else(|| {
                 let signal = &self.wave.signals[id];
-                self.new_watch(signal, self.session.watches.len() as u8 % 8)
+                self.new_watch(signal, 0)
             });
         self.signal_drag = Some(SignalDrag {
             watch,

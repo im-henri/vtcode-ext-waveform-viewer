@@ -320,12 +320,9 @@ fn browser_search_adds_signal_and_can_work_in_a_narrow_terminal() {
         ..Event::default()
     });
     key(&mut v, "enter");
-    assert_eq!(v.focus, Focus::Browser);
-    assert!(v.layout().browser > 0);
+    assert_eq!(v.focus, Focus::Waves);
     assert_eq!(v.browser_nodes.len(), 1);
-    key(&mut v, "enter");
     assert_eq!(v.session.watches.len(), 13);
-    key(&mut v, "tab");
     assert_eq!(v.focus, Focus::Waves);
     assert_eq!(v.layout().browser, 0);
 }
@@ -374,6 +371,7 @@ fn search_is_bounded_and_cancelable() {
 #[test]
 fn shift_wheel_pans_like_horizontal_wheel_without_scrolling_signals_or_moving_cursors() {
     let mut v = viewer();
+    v.session.browser = true;
     v.height = 16;
     v.session.span = 400;
     v.session.cursor = 240;

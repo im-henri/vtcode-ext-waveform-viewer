@@ -147,6 +147,8 @@ pub struct Session {
     pub snap: bool,
     pub name_width: u16,
     pub value_width: u16,
+    #[serde(default)]
+    pub inspector: bool,
     /// Read the former global setting only to migrate older sessions.
     #[serde(rename = "density", skip_serializing)]
     pub legacy_density: Option<WaveSize>,
@@ -161,11 +163,12 @@ impl Default for Session {
             start: 0,
             span: 1,
             markers: vec![],
-            browser: true,
+            browser: false,
             full_names: false,
             snap: true,
             name_width: 28,
-            value_width: 13,
+            value_width: 23,
+            inspector: false,
             legacy_density: None,
         }
     }
@@ -181,6 +184,7 @@ pub enum Prompt {
     Filter,
     FindValue,
     Goto,
+    GotoB,
     Rename,
     Group,
     Marker,
@@ -191,7 +195,8 @@ impl Prompt {
         match self {
             Self::Filter => "Filter signals",
             Self::FindValue => "Find value",
-            Self::Goto => "Go to time",
+            Self::Goto => "Go to time (A)",
+            Self::GotoB => "Go to time (B)",
             Self::Rename => "Rename",
             Self::Group => "New group",
             Self::Marker => "Marker name",
@@ -229,6 +234,9 @@ pub struct Event {
     pub direction: i32,
     pub axis: String,
     pub pointer_inside: Option<bool>,
+    /// Optional host additions; legacy event payloads remain accepted.
+    pub button: String,
+    pub click_count: u8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -321,6 +329,8 @@ pub struct Viewer {
     pub overview_drag: Option<OverviewDrag>,
     pub signal_drag: Option<SignalDrag>,
     pub hover: Option<Hover>,
+    pub(crate) detail_stop: Option<(u64, u64, u16)>,
+    pub(crate) view_history: Vec<(u64, u64)>,
     pub history: Vec<Session>,
     pub redo: Vec<Session>,
     pub save_requested: bool,
@@ -385,6 +395,8 @@ impl Viewer {
             overview_drag: None,
             signal_drag: None,
             hover: None,
+            detail_stop: None,
+            view_history: Vec::new(),
             history: vec![],
             redo: vec![],
             save_requested: false,
@@ -401,12 +413,8 @@ impl Viewer {
     }
     pub(crate) fn new_watch(&self, signal: &crate::model::Signal, color: u8) -> Watch {
         let mut watch = Watch::signal(signal.path.clone(), color);
-        if let Watch::Signal { analog, size, .. } = &mut watch {
+        if let Watch::Signal { analog, .. } = &mut watch {
             *analog = matches!(signal.kind.as_str(), "real" | "realtime");
-            // Keep buses dense while giving single-bit signals square edges.
-            if signal.width > 1 && !*analog {
-                *size = WaveSize::Small;
-            }
         }
         watch
     }
@@ -441,8 +449,15 @@ impl Viewer {
             .take()
             .is_some_and(|session| self.restore(session).is_ok());
         if !restored {
-            for signal in self.wave.signals.iter().take(12) {
-                let watch = self.new_watch(signal, self.session.watches.len() as u8 % 8);
+            let mut traces = HashSet::new();
+            for signal in self
+                .wave
+                .signals
+                .iter()
+                .filter(|signal| traces.insert(signal.trace))
+                .take(12)
+            {
+                let watch = self.new_watch(signal, 0);
                 self.session.watches.push(watch);
             }
         }
@@ -458,6 +473,14 @@ impl Viewer {
             }
         );
         self.error = false;
+        self.view_history.clear();
+    }
+    pub fn inspector_height(&self) -> u16 {
+        if self.session.inspector && self.width >= 80 && self.height >= 30 {
+            4
+        } else {
+            0
+        }
     }
     pub fn layout(&self) -> Layout {
         let browser = if self.session.browser
@@ -488,12 +511,26 @@ impl Viewer {
             wave_x,
             wave_width: self.width.min(512).saturating_sub(wave_x),
             body_y: 5,
-            body_height: self.height.min(200).saturating_sub(8),
+            body_height: self
+                .height
+                .min(200)
+                .saturating_sub(9 + self.inspector_height()),
         }
     }
     pub fn fit(&mut self) {
+        if (self.session.start, self.session.span)
+            != (
+                self.wave.start,
+                self.wave.end.saturating_sub(self.wave.start).max(1),
+            )
+        {
+            self.remember_view();
+        }
+        self.detail_stop = None;
         self.session.start = self.wave.start;
         self.session.span = self.wave.end.saturating_sub(self.wave.start).max(1);
+        self.status =
+            "Entire recording · Shaded cells show activity · Detail inspects cursor A".into();
     }
     pub fn clamp_window(&mut self) {
         let duration = self.wave.end.saturating_sub(self.wave.start).max(1);
@@ -505,9 +542,19 @@ impl Viewer {
                 .saturating_sub(self.session.span)
                 .max(self.wave.start),
         );
+        if self.view_history.last() == Some(&(self.session.start, self.session.span)) {
+            self.view_history.pop();
+        }
     }
     pub fn time_at(&self, column: u16) -> u64 {
         let l = self.layout();
+        if l.wave_width == 1 {
+            return self
+                .session
+                .start
+                .saturating_add(self.session.span)
+                .min(self.wave.end);
+        }
         let x = column
             .saturating_sub(l.wave_x)
             .min(l.wave_width.saturating_sub(1));
@@ -529,22 +576,53 @@ impl Viewer {
             l.wave_x
                 + ((u128::from(time - self.session.start)
                     * u128::from(l.wave_width.saturating_sub(1)))
-                    / u128::from(self.session.span.max(1))) as u16,
+                .div_ceil(u128::from(self.session.span.max(1)))) as u16,
         )
     }
     pub fn zoom(&mut self, inward: bool, anchor: u64) {
+        self.remember_view();
         let old = self.session.span;
-        let new = if inward {
+        let previous_stop = self.detail_stop.take();
+        let continue_overview =
+            !inward && previous_stop == Some((self.session.start, old, self.layout().wave_width));
+        let mut new = if inward {
             old.div_ceil(2).max(1)
         } else {
             old.saturating_mul(2)
         };
+        let limit = self.detail_limit();
+        let mut stopped = false;
+        if let Some(limit) = limit
+            && !continue_overview
+            && old < limit
+            && new > limit
+        {
+            new = limit;
+            stopped = true;
+        }
+        let duration = self.wave.end.saturating_sub(self.wave.start).max(1);
+        new = new.min(duration);
         let relative = anchor.saturating_sub(self.session.start).min(old);
         self.session.span = new;
         self.session.start = anchor.saturating_sub(
             ((u128::from(relative) * u128::from(new)) / u128::from(old.max(1))) as u64,
         );
         self.clamp_window();
+        if stopped || !inward && limit == Some(self.session.span) {
+            self.detail_stop = Some((
+                self.session.start,
+                self.session.span,
+                self.layout().wave_width,
+            ));
+            self.status =
+                "Terminal detail limit · − again continues into activity overview · i inspects A"
+                    .into();
+        } else {
+            self.status = format!(
+                "Zoomed {} · Hover + i inspects a cell · Detail inspects cursor A",
+                if inward { "in" } else { "out" }
+            );
+        }
     }
     pub fn pan(&mut self, right: bool) {
         let step = (self.session.span / 5).max(1);
@@ -556,8 +634,12 @@ impl Viewer {
         self.clamp_window();
     }
     pub fn reveal_cursor(&mut self) {
-        if self.column_at(self.session.cursor).is_none() {
-            self.session.start = self.session.cursor.saturating_sub(self.session.span / 2);
+        self.reveal_time(self.session.cursor);
+    }
+    pub(crate) fn reveal_time(&mut self, time: u64) {
+        if self.column_at(time).is_none() {
+            self.remember_view();
+            self.session.start = time.saturating_sub(self.session.span / 2);
             self.clamp_window();
         }
     }
@@ -786,7 +868,7 @@ impl Viewer {
                 self.fail("At most 256 watched signals/groups; remove some first");
                 return;
             }
-            let watch = self.new_watch(signal, self.session.watches.len() as u8 % 8);
+            let watch = self.new_watch(signal, 0);
             self.session.watches.push(watch);
             self.selection = self.session.watches.len() - 1;
             self.selected_bit = None;
@@ -838,6 +920,11 @@ impl Viewer {
         self.dialog = crate::dialogs::DialogState::new(self);
         self.prompt = Some(prompt);
         self.input = match prompt {
+            Prompt::Goto => self.wave.timescale.format(self.session.cursor),
+            Prompt::GotoB => self
+                .wave
+                .timescale
+                .format(self.session.alt_cursor.unwrap_or(self.session.cursor)),
             Prompt::Filter => self.filter.clone(),
             Prompt::FindValue => self.search_query.clone(),
             Prompt::Rename => match self.session.watches.get(self.selection) {
@@ -850,6 +937,10 @@ impl Viewer {
         self.dialog.cursor = self.input.len();
         self.dialog.select_all = !self.input.is_empty();
         self.error = false;
+        if prompt == Prompt::Filter {
+            self.session.browser = true;
+            self.focus = Focus::Browser;
+        }
     }
     pub fn edge(&mut self, reverse: bool, alt: bool, polarity: Option<char>) {
         let current = if alt {
@@ -965,19 +1056,43 @@ impl Viewer {
         {
             let changes = &self.wave.traces[trace].changes;
             let index = changes.partition_point(|c| c.time < time);
-            let tolerance = self.session.span / u64::from(self.layout().wave_width.max(1)) * 2;
+            let (start, end) = self.cell_range(column);
+            let compressed = self.wave.traces[trace]
+                .activity(
+                    self.wave.traces[trace].index_at(start),
+                    self.wave.traces[trace].index_at(end),
+                    bit,
+                )
+                .compressed();
             let mut nearest = None;
-            for i in index.saturating_sub(2)..(index + 2).min(changes.len()) {
+            for i in index.saturating_sub(64)..index.saturating_add(64).min(changes.len()) {
+                if compressed {
+                    break;
+                }
                 if let Some(bit) = bit
                     && i > 0
-                    && changes[i].value.bit(bit) == changes[i - 1].value.bit(bit)
+                    && changes[i].value.bit_logic(bit) == changes[i - 1].value.bit_logic(bit)
                 {
                     continue;
                 }
-                if changes[i].time.abs_diff(time) <= tolerance
-                    && nearest
-                        .is_none_or(|t: u64| changes[i].time.abs_diff(time) < t.abs_diff(time))
+                let Some(edge_column) = self.column_at(changes[i].time) else {
+                    continue;
+                };
+                if edge_column.abs_diff(column) > 2 {
+                    continue;
+                }
+                let (edge_start, edge_end) = self.cell_range(edge_column);
+                if self.wave.traces[trace]
+                    .activity(
+                        self.wave.traces[trace].index_at(edge_start),
+                        self.wave.traces[trace].index_at(edge_end),
+                        bit,
+                    )
+                    .compressed()
                 {
+                    continue;
+                }
+                if nearest.is_none_or(|t: u64| changes[i].time.abs_diff(time) < t.abs_diff(time)) {
                     nearest = Some(changes[i].time);
                 }
             }

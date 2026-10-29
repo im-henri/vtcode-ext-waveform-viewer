@@ -78,6 +78,10 @@ pub struct Frame {
     pub cursor: Option<(u16, u16)>,
     pub document: Option<u32>,
     pub title: Option<String>,
+    /// Additional mouse buttons routed to the mouse handler (currently "middle").
+    /// Older hosts ignore this optional field. Right click uses context menus.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pointer_buttons: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

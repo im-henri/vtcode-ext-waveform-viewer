@@ -26,6 +26,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut viewer = Viewer::new(path, None);
     viewer.ready(wave);
+    if let Ok(value) = std::env::var("WAVE_BROWSER") {
+        viewer.session.browser = value != "0";
+    }
+    if let Ok(value) = std::env::var("WAVE_INSPECTOR") {
+        viewer.session.inspector = value != "0";
+    }
     if let Ok(size) = std::env::var("WAVE_SIZE") {
         let size = match size.to_lowercase().as_str() {
             "small" => WaveSize::Small,
@@ -66,6 +72,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             viewer.session.span = span.parse()?;
         }
         viewer.clamp_window();
+        if std::env::var("WAVE_DETAIL").is_ok() {
+            viewer.action("detail");
+        }
         if let Ok(selection) = std::env::var("WAVE_SELECT") {
             for (position, index) in selection.split(',').enumerate() {
                 let index: usize = index.trim().parse()?;
@@ -87,6 +96,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         if let Ok(name) = std::env::var("WAVE_DRAG_SIGNAL") {
+            viewer.session.browser = true;
+            viewer.focus = vtcode_waveform_viewer::viewer::Focus::Browser;
             viewer.expanded_scopes.extend(0..viewer.wave.scopes.len());
             viewer.rebuild_browser();
             let node = viewer.browser_nodes.iter().position(|node| {
@@ -120,6 +131,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 kind: "move".into(),
                 view_column: x.parse()?,
                 view_row: y.parse()?,
+                ..Event::default()
+            });
+        }
+        if let Ok(name) = std::env::var("WAVE_HOVER_SIGNAL") {
+            let watch = viewer.session.watches.iter().position(|watch| matches!(watch, vtcode_waveform_viewer::viewer::Watch::Signal { path, .. } if viewer.wave.signals[viewer.signal_index[path]].name == name || *path == name)).ok_or("Unknown WAVE_HOVER_SIGNAL")?;
+            viewer.selection = watch;
+            viewer.ensure_selection();
+            let row = viewer
+                .rows()
+                .into_iter()
+                .find(|row| row.watch == watch && row.bit.is_none())
+                .unwrap();
+            let l = viewer.layout();
+            let region = std::env::var("WAVE_HOVER_REGION").unwrap_or_default();
+            let x = match region.as_str() {
+                "name" => l.browser + 3,
+                "value" => l.wave_x.saturating_sub(3),
+                _ => std::env::var("WAVE_HOVER_TIME")
+                    .ok()
+                    .and_then(|time| time.parse().ok())
+                    .and_then(|time| viewer.column_at(time))
+                    .unwrap_or(l.wave_x + l.wave_width / 2),
+            };
+            viewer.event(Event {
+                kind: "move".into(),
+                view_column: x,
+                view_row: l.body_y + row.line + row.height / 2 - viewer.scroll as u16,
                 ..Event::default()
             });
         }
@@ -176,12 +214,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ..Event::default()
             });
         }
+        if let Ok(name) = std::env::var("WAVE_MAIN_MENU") {
+            let menu = vtcode_waveform_viewer::workbench::MainMenu::ALL
+                .into_iter()
+                .find(|menu| menu.name().eq_ignore_ascii_case(&name))
+                .ok_or("Unknown WAVE_MAIN_MENU")?;
+            viewer.open_main_menu(menu);
+        }
         if let Ok(query) = std::env::var("WAVE_QUERY") {
             use vtcode_waveform_viewer::viewer::Prompt;
             viewer.open_prompt(match query.as_str() {
                 "group" => Prompt::Group,
                 "marker" => Prompt::Marker,
                 "goto" => Prompt::Goto,
+                "goto_b" => Prompt::GotoB,
                 "filter" => Prompt::Filter,
                 "rename" => Prompt::Rename,
                 "import" => Prompt::Import,
@@ -243,6 +289,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         event::EnableMouseCapture,
         cursor::Hide
     )?;
+    let mut last_click: Option<(event::MouseButton, u16, u16, std::time::Instant, u8)> = None;
     loop {
         let (width, height) = terminal::size()?;
         viewer.width = width;
@@ -298,14 +345,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 input.control = mouse.modifiers.contains(KeyModifiers::CONTROL);
                 input.shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
                 input.alt = mouse.modifiers.contains(KeyModifiers::ALT);
+                let button = match mouse.kind {
+                    MouseEventKind::Down(button)
+                    | MouseEventKind::Up(button)
+                    | MouseEventKind::Drag(button) => Some(button),
+                    _ => None,
+                };
+                if let Some(button) = button {
+                    input.button = match button {
+                        event::MouseButton::Left => "left",
+                        event::MouseButton::Middle => "middle",
+                        event::MouseButton::Right => "right",
+                    }
+                    .into();
+                    if matches!(mouse.kind, MouseEventKind::Down(_)) {
+                        let now = std::time::Instant::now();
+                        input.click_count = last_click
+                            .filter(|&(b, x, y, at, count)| {
+                                b == button
+                                    && x == mouse.column
+                                    && y == mouse.row
+                                    && now.duration_since(at)
+                                        <= std::time::Duration::from_millis(400)
+                                    && count < 3
+                            })
+                            .map_or(1, |(_, _, _, _, count)| count + 1);
+                        last_click =
+                            Some((button, mouse.column, mouse.row, now, input.click_count));
+                    } else if matches!(mouse.kind, MouseEventKind::Drag(_)) {
+                        last_click = None;
+                    }
+                }
                 match mouse.kind {
-                    MouseEventKind::Down(event::MouseButton::Left) => input.kind = "down".into(),
+                    MouseEventKind::Down(event::MouseButton::Left | event::MouseButton::Middle) => {
+                        input.kind = "down".into()
+                    }
                     MouseEventKind::Down(event::MouseButton::Right) => {
                         input.kind = "contextMenu".into()
                     }
-                    MouseEventKind::Up(event::MouseButton::Left) => input.kind = "up".into(),
-                    MouseEventKind::Drag(event::MouseButton::Left) => input.kind = "drag".into(),
-                    MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(_) => {
+                    MouseEventKind::Up(event::MouseButton::Left | event::MouseButton::Middle) => {
+                        input.kind = "up".into()
+                    }
+                    MouseEventKind::Drag(event::MouseButton::Left | event::MouseButton::Middle) => {
+                        input.kind = "drag".into()
+                    }
+                    MouseEventKind::Up(_) | MouseEventKind::Drag(_) => {
                         continue;
                     }
                     MouseEventKind::Moved => input.kind = "move".into(),
