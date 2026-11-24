@@ -120,7 +120,6 @@ impl Viewer {
             ),
         ];
         let width = self.width.min(512);
-        let duration = self.wave.end.saturating_sub(self.wave.start).max(1);
         let mut buttons = Vec::new();
         let mut x: u16 = 1;
         for (label, action, hint, active, minimum) in definitions {
@@ -152,8 +151,8 @@ impl Viewer {
                 enabled: self.loading.is_none()
                     && match action {
                         "previous" | "next" | "find" | "detail" => self.selected().is_some(),
-                        "zoom_in" => self.session.span > 1,
-                        "zoom_out" => self.session.span < duration,
+                        "zoom_in" => self.cell_ticks() > 1,
+                        "zoom_out" => self.cell_ticks() < self.fit_ticks(),
                         "zoom_back" => !self.view_history.is_empty(),
                         "fit_cursors" => self.session.alt_cursor.is_some(),
                         _ => true,
@@ -175,7 +174,12 @@ impl Viewer {
         buttons
     }
 
-    pub fn event(&mut self, mut event: Event) {
+    pub fn event(&mut self, event: Event) {
+        let before = (self.wave_columns(), self.cell_ticks(), self.session.span);
+        self.handle_event(event);
+        self.keep_cell_size(before);
+    }
+    fn handle_event(&mut self, mut event: Event) {
         if event.button == "middle" {
             event.alt = true;
             event.shift = false;
@@ -1024,6 +1028,11 @@ impl Viewer {
                     .map(|b| b.menu)
                 {
                     self.open_main_menu(menu);
+                } else if self
+                    .scale_badge()
+                    .is_some_and(|(_, start, width)| x >= start && x < start + width)
+                {
+                    self.exact_view();
                 }
                 return;
             }
@@ -1062,8 +1071,7 @@ impl Viewer {
                 return;
             }
             if self.height >= 8
-                && (self.height.min(200).saturating_sub(4)..=self.height.min(200).saturating_sub(3))
-                    .contains(&y)
+                && y == self.height.min(200).saturating_sub(3)
                 && x >= l.wave_x
                 && x < l.wave_x + l.wave_width
             {
@@ -1163,9 +1171,7 @@ impl Viewer {
             {
                 let end = self.time_at(x);
                 self.remember_view();
-                self.session.start = end.min(drag.time);
-                self.session.span = end.abs_diff(drag.time).max(1);
-                self.clamp_window();
+                self.fit_range(drag.time, end);
             } else if let Some(watch) = drag.watch {
                 let line = self.scroll + usize::from(y.saturating_sub(l.body_y));
                 if let Some(target) = self

@@ -152,13 +152,28 @@ for the complete pair. Expanded bits only report their own changes.
 
 ![Before and after values at a transition](docs/edge-inspection.png)
 
-Zooming out pauses at a terminal detail limit: two columns for logic levels and
-enough room for formatted bus values. Press `-` again to continue; **Fit** / `0`
-always shows the entire recording. Compressed cells become an explicit
-**Overview**, with `▒` shading wherever multiple changes share a cell. Pulses
-that return to the same value remain visible, including in expanded bus bits
-and analog plots. Shading represents activity, never a logic level or bus value.
-The timeline header reports the time covered by one terminal cell.
+Every terminal cell covers a whole number of ticks, and the window starts on a
+cell boundary, so a transition time always lands in the same column on every
+row, on the ruler, and under the cursors. The viewer also finds the recording's
+time grid (the largest step dividing every watched transition, e.g. a clock's
+half period). At any cell size that divides this grid, the view is **Exact**:
+every edge sits on a cell boundary and every interval is drawn at its true
+length, so a steady clock looks steady. Zoom levels below the grid are all
+exact, and the file opens on the widest exact view when it shows a useful part
+of the recording.
+
+Zooming out stops on that **exact limit** (a soft lock). Press `-` again to go
+past it into a **≈ Preview**: rows whose edges no longer fit the cells get a
+subtle tint, and changes closer than two cells merge into one uniform `▒`
+activity band instead of beating against the cell grid. **Fit** / `0` always
+shows the entire recording, exact or not. The title-row badge always states the
+mode, the cell size and how much of the recording is visible (for example
+`Exact · 10 ns / cell · 98% shown`); click it, or zoom in, to return to the
+exact limit. Past the final recorded time the timeline is blank and marked
+with `▏`, and the time navigator below the waves brackets the visible window
+within the recording. Pulses that return to the same value remain visible,
+including in expanded bus bits and analog plots. Shading represents activity,
+never a logic level or bus value.
 
 Choose **Detail** (or `i`) to inspect the selected signal around A. To investigate
 a compressed cell anywhere else, hover it and press `i`: the cell's time interval
@@ -252,7 +267,7 @@ model as the Wasm extension. Ctrl+S in the preview writes
 | Next rising / falling transition | `u` / `j`; Shift reverses direction |
 | Move cursor B to an edge | Alt+N / Alt+Shift+N, or Alt+click an edge button; VTCode reserves Alt+Left / Right for workbench navigation |
 | Zoom / fit duration | `+` / `-`, `0` or Ctrl+0 |
-| Resolve a readable view around A | **Detail** or `i`; zoom-out pauses at the terminal detail limit, then `-` continues |
+| Resolve a readable view around A | **Detail** or `i`; zoom-out pauses at the exact limit, then `-` continues into a tinted preview |
 | Return to previous zoom / range | **Back** or Shift+Z |
 | Fit the A–B measurement | **A–B** or `z` |
 | Show / hide the docked inspector | **Inspect** or `v`; docks when the view is at least 80 × 30 |

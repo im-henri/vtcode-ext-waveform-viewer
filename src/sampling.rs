@@ -134,9 +134,10 @@ impl Viewer {
             return;
         };
         self.remember_view();
-        self.session.start = b.min(self.session.cursor);
-        self.session.span = b.abs_diff(self.session.cursor).max(1);
-        self.clamp_window();
+        // A small margin keeps both cursor lines off the window edges.
+        let (from, to) = (b.min(self.session.cursor), b.max(self.session.cursor));
+        let margin = (to - from) / 20;
+        self.fit_range(from.saturating_sub(margin), to.saturating_add(margin));
         self.status = "Fitted between A and B · Shift+Z restores the previous view".into();
     }
     pub(crate) fn transition_values(
@@ -168,9 +169,7 @@ impl Viewer {
             .filter(|hover| hover.row.is_some() && hover.x >= self.layout().wave_x)
         {
             let (start, end) = self.cell_range(hover.x);
-            self.session.start = start;
-            self.session.span = end.saturating_sub(start).max(1);
-            self.clamp_window();
+            self.fit_range(start, end);
             // The host coalesces stationary pointer moves. Keep inspection alive
             // after zoom so another i works without a physical mouse movement.
             self.detail_stop = None;
@@ -182,7 +181,7 @@ impl Viewer {
     }
     pub(crate) fn samples(&self, trace: &Trace, bit: Option<u32>) -> Vec<Sample> {
         let l = self.layout();
-        let mut previous = trace.index_at(self.session.start);
+        let mut previous = trace.index_at(self.view_start());
         (0..l.wave_width)
             .map(|dx| {
                 let index = trace.index_at(self.time_at(l.wave_x + dx));
@@ -230,9 +229,8 @@ impl Viewer {
             };
             let bit = row.bit.or(bit);
             let trace = &self.wave.traces[self.wave.signals[id].trace];
-            let first = trace.index_at(self.session.start).saturating_sub(1);
-            let end = (trace.index_at(self.session.start.saturating_add(self.session.span)) + 1)
-                .min(trace.changes.len());
+            let first = trace.index_at(self.view_start()).saturating_sub(1);
+            let end = (trace.index_at(self.view_end()) + 1).min(trace.changes.len());
             let columns = if bit.is_some() || self.wave.signals[id].width == 1 || analog {
                 2
             } else {
@@ -306,18 +304,15 @@ impl Viewer {
         if let Some(limit) = self.detail_limit() {
             self.session.span = self.session.span.min(limit);
         }
-        self.session.start = self.session.cursor.saturating_sub(self.session.span / 2);
+        // Round the cell size down (never coarser than requested), so labels
+        // that were sized to fit still fit, and keep it exact.
+        let cell = self.snap_ticks_down(self.session.span / self.wave_columns());
+        self.session.span = cell.saturating_mul(self.wave_columns());
+        self.session.start = self
+            .session
+            .cursor
+            .saturating_sub(cell.saturating_mul(self.wave_columns() / 2));
         self.clamp_window();
         self.status = "Detail around cursor A · ←/→ steps exact transitions · − zooms out".into();
-    }
-
-    pub(crate) fn cell_scale(&self) -> String {
-        let columns = u64::from(self.layout().wave_width.saturating_sub(1).max(1));
-        let ticks = self.session.span.div_ceil(columns);
-        if self.session.span.is_multiple_of(columns) {
-            format!("{} / cell", self.wave.timescale.format(ticks))
-        } else {
-            format!("≤ {} / cell", self.wave.timescale.format(ticks))
-        }
     }
 }

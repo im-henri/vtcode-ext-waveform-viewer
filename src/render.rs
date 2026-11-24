@@ -200,14 +200,8 @@ struct Resolution {
     mixed: bool,
     unresolved: bool,
     unlabelled: bool,
-}
-impl Resolution {
-    fn compressed(&self) -> bool {
-        self.mixed || self.unresolved
-    }
-    fn overview(&self) -> bool {
-        self.compressed() || self.unlabelled
-    }
+    /// Rows whose transitions do not all land on cell boundaries.
+    estimated: usize,
 }
 impl Default for Renderer {
     fn default() -> Self {
@@ -544,12 +538,24 @@ impl Viewer {
             }
         }
         // A 1/2/5 tick progression keeps rulers useful at every zoom level.
-        let step = tick_step(self.session.span, l.wave_width);
-        let first = self.session.start.div_ceil(step).saturating_mul(step);
-        let right = self.session.start.saturating_add(self.session.span);
-        let start_label = self.wave.timescale.format(self.session.start);
+        // Ticks sit on cell boundaries so labels and gridlines line up exactly
+        // with the transitions drawn at the same times.
+        let step = ruler_step(self.cell_ticks(), self.session.span, l.wave_width);
+        let origin = self.wave.start;
+        let first = origin
+            + (self.view_start() - origin)
+                .div_ceil(step)
+                .saturating_mul(step);
+        // Past the end of the recording there is nothing to measure: the ruler
+        // ends with the recording's final time, right-aligned on its column.
+        let right = self.view_end().min(self.wave.end);
+        let start_label = self.wave.timescale.format(self.view_start());
         let end_label = self.wave.timescale.format(right);
-        let end_x = width.saturating_sub(end_label.width() as u16).max(l.wave_x);
+        let right_x = self.column_at(right).unwrap_or(width.saturating_sub(1)) + 1;
+        let end_x = right_x
+            .min(width)
+            .saturating_sub(end_label.width() as u16)
+            .max(l.wave_x);
         let endpoints_fit =
             start_label.width() + end_label.width() + 4 <= usize::from(l.wave_width);
         let mut tick = first;
@@ -605,21 +611,9 @@ impl Viewer {
         }) {
             self.draw_row(canvas, row.row, row.preview, &mut resolution);
         }
-        let scale = format!(
-            "{} · {}",
-            if resolution.overview() {
-                "Overview"
-            } else {
-                "Detail"
-            },
-            self.cell_scale()
-        );
-        // Keep the resolution readout outside cursor/marker handles on the ruler.
-        let badge_width = if width >= 80 {
-            (scale.width() as u16 + 2).min(width / 2)
-        } else {
-            0
-        };
+        self.shade_outside_recording(canvas);
+        let badge = self.scale_badge();
+        let badge_width = badge.as_ref().map(|(_, _, w)| *w + 1).unwrap_or(0);
         let title_end = width.saturating_sub(badge_width + 1);
         let mut meta_x = 1;
         for button in self.main_menus() {
@@ -662,18 +656,21 @@ impl Viewer {
             "header",
             false,
         );
-        if badge_width > 0 {
+        if let Some((text, x, w)) = badge {
+            let hovered = self
+                .hover
+                .is_some_and(|h| h.y == 0 && h.x >= x && h.x < x + w);
             canvas.text(
-                title_end + 1,
+                x,
                 0,
-                badge_width.saturating_sub(1),
-                &ellipsize(&scale, badge_width.saturating_sub(1) as usize),
-                if resolution.overview() {
+                w,
+                &ellipsize(&text, usize::from(w)),
+                if self.preview_scale() {
                     "warning"
                 } else {
-                    "muted"
+                    "success"
                 },
-                "header",
+                if hovered { "selection" } else { "header" },
                 true,
             );
         }
@@ -847,23 +844,35 @@ impl Viewer {
                 false,
             );
         }
-        let resolution_hint = if resolution.unlabelled && !resolution.compressed() {
-            "Overview · Bus intervals too narrow for full values · Detail resolves values around A · + zooms in".into()
-        } else if resolution.compressed() {
+        let resolution_hint = if resolution.estimated > 0 {
+            let limit = self
+                .exact_limit()
+                .map(|limit| self.wave.timescale.format(limit))
+                .unwrap_or_default();
             if width >= 115 {
                 format!(
-                    "Overview · ▒ multiple values in one cell{} · Hover + i: inspect cell · Detail: A · ←/→ exact edges",
+                    "≈ Preview · tinted rows round edges to {} cells · ▒ changes too close to place{} · + or click the badge: exact ({limit} / cell)",
+                    self.wave.timescale.format(self.cell_ticks()),
                     if resolution.unresolved {
                         " · ░ unresolved bit"
                     } else {
                         ""
                     }
                 )
-            } else if resolution.unresolved {
-                "Overview · ▒ mixed · ░ unresolved · Hover + i: inspect".into()
             } else {
-                "Overview · ▒ multiple values / cell · Hover + i: inspect".into()
+                format!(
+                    "≈ Preview · tinted rows are estimates{} · + zooms to exact ({limit} / cell)",
+                    if resolution.unresolved {
+                        " · ░ unresolved"
+                    } else {
+                        ""
+                    }
+                )
             }
+        } else if resolution.unresolved {
+            "░ unresolved: too many bus changes in one cell to check this bit · + zooms in".into()
+        } else if resolution.unlabelled {
+            "Exact · Some bus values are too narrow to label · hover shows them · + zooms in".into()
         } else {
             String::new()
         };
@@ -876,8 +885,8 @@ impl Viewer {
             };
             Some(format!(
                 "{}A edge @ {} · Before {} → After {} · At the transition, A uses After",
-                if resolution.compressed() {
-                    "▒ multiple values/cell · "
+                if resolution.estimated > 0 {
+                    "≈ Preview (tinted rows are estimates) · "
                 } else {
                     ""
                 },
@@ -892,7 +901,7 @@ impl Viewer {
             && let Some(hint) = &edge_hint
         {
             hint
-        } else if resolution.overview() {
+        } else if !resolution_hint.is_empty() {
             &resolution_hint
         } else if self.selection_count() > 1 {
             "Right-click selection: format, color & size   Delete removes   Ctrl+Z undo   Esc selects one   ? help"
@@ -984,6 +993,7 @@ impl Viewer {
             }
         }
         let in_view = relative_y >= i32::from(l.body_y);
+        let mut estimated = false;
         match item {
             Watch::Group { name, collapsed } => {
                 let collapsed = *collapsed && self.preview_group() != Some(row.watch);
@@ -1152,7 +1162,7 @@ impl Viewer {
                     }
                 }
                 if let Some(id) = id {
-                    self.draw_trace(
+                    estimated = self.draw_trace(
                         canvas,
                         row,
                         relative_y,
@@ -1163,6 +1173,23 @@ impl Viewer {
                         *analog && effective_bit.is_none(),
                         resolution,
                     );
+                    resolution.estimated += usize::from(estimated && !preview);
+                }
+            }
+        }
+        if estimated && !preview && !hovered && !selected {
+            // A preview estimate: some transitions in this row fall inside a
+            // cell, so their drawn position is rounded to the cell.
+            for offset in 0..row.height {
+                let y = relative_y + i32::from(offset);
+                if y >= i32::from(l.body_y) && y < i32::from(l.body_y + l.body_height) {
+                    for x in l.wave_x..canvas.width {
+                        if let Some(cell) = canvas.get(x, y as u16)
+                            && cell.background.is_empty()
+                        {
+                            cell.background = "hover";
+                        }
+                    }
                 }
             }
         }
@@ -1221,12 +1248,17 @@ impl Viewer {
         role: &'static str,
         analog: bool,
         resolution: &mut Resolution,
-    ) {
+    ) -> bool {
         let l = self.layout();
         let trace = &self.wave.traces[self.wave.signals[signal].trace];
+        let estimated = !self.row_exact(trace, bit);
         let digital = bit.is_some()
             || self.wave.signals[signal].width == 1 && self.wave.signals[signal].kind != "real";
-        let samples = self.samples(trace, bit);
+        let mut samples = self.samples(trace, bit);
+        // An analog plot is a sampled curve either way; keep its shape.
+        if estimated && !analog {
+            summarize_crowded_edges(&mut samples);
+        }
         for sample in &samples {
             resolution.mixed |= sample.activity == Activity::Mixed;
             resolution.unresolved |= sample.activity == Activity::Unresolved;
@@ -1237,12 +1269,12 @@ impl Viewer {
             } else {
                 resolution.unlabelled |= self.draw_bus(canvas, y, signal, radix, role, &samples);
             }
-            return;
+            return estimated;
         }
         let mut range = (f64::INFINITY, f64::NEG_INFINITY);
         if analog {
-            let first = trace.index_at(self.session.start).saturating_sub(1);
-            let end = trace.index_at(self.session.start.saturating_add(self.session.span));
+            let first = trace.index_at(self.view_start()).saturating_sub(1);
+            let end = trace.index_at(self.view_end());
             // Sampling only visible columns makes analog rendering independent of
             // the total number of transitions in the dump.
             for x in 0..l.wave_width {
@@ -1415,6 +1447,29 @@ impl Viewer {
             }
             previous_logic = logic;
         }
+        estimated
+    }
+
+    /// Cells entirely after the final recorded time hold no data. Blank them
+    /// on the panel color so the end of the recording is unmistakable.
+    fn shade_outside_recording(&self, canvas: &mut Canvas) {
+        let l = self.layout();
+        if self.view_end() <= self.wave.end || l.wave_width < 2 {
+            return;
+        }
+        let Some(last) = self.column_at(self.wave.end) else {
+            return;
+        };
+        for y in l.body_y..l.body_y + l.body_height {
+            for x in last + 1..l.wave_x + l.wave_width {
+                if let Some(cell) = canvas.get(x, y) {
+                    cell.text = if x == last + 1 { '▏' } else { ' ' };
+                    cell.role = "muted";
+                    cell.background = "panel";
+                    cell.protected = false;
+                }
+            }
+        }
     }
 
     fn draw_bus(
@@ -1439,7 +1494,7 @@ impl Viewer {
         // with the value inspector, including changes inside a terminal cell.
         let mut runs = Vec::new();
         let mut start = 0;
-        let mut previous = trace.index_at(self.session.start);
+        let mut previous = trace.index_at(self.view_start());
         let mut rail_role = role;
         for dx in 0..l.wave_width {
             let index = samples[dx as usize].index;
@@ -1544,7 +1599,7 @@ impl Viewer {
         let trace = &self.wave.traces[self.wave.signals[signal].trace];
         let mut runs = vec![];
         let mut start = 0;
-        let mut previous = trace.index_at(self.session.start);
+        let mut previous = trace.index_at(self.view_start());
         canvas.fill(l.wave_x, y, l.wave_width, "muted", "panel");
         for (dx, sample) in samples.iter().enumerate() {
             let index = sample.index;
@@ -1897,88 +1952,25 @@ impl Viewer {
         if l.wave_width == 0 {
             return;
         }
+        // One row: the whole recording, with the visible window bracketed.
         let y = canvas.height - 3;
-        let ruler_y = y - 1;
-        canvas.fill(0, ruler_y, canvas.width, "muted", "panel");
+        canvas.fill(0, y, canvas.width, "muted", "panel");
+        let label = format!(
+            "Recording {} – {}",
+            self.wave.timescale.format(self.wave.start),
+            self.wave.timescale.format(self.wave.end)
+        );
         canvas.text(
             l.browser + 1,
-            ruler_y,
+            y,
             (l.name + l.value).saturating_sub(2),
-            "Full scale",
+            &ellipsize(&label, (l.name + l.value).saturating_sub(2) as usize),
             "muted",
             "panel",
             false,
         );
-        let start = self.wave.timescale.format(self.wave.start);
-        let end = self.wave.timescale.format(self.wave.end);
-        let end_x = canvas
-            .width
-            .saturating_sub(end.width() as u16)
-            .max(l.wave_x);
-        let fit = start.width() + end.width() + 3 <= usize::from(l.wave_width);
-        let step = tick_step(self.wave.end.saturating_sub(self.wave.start), l.wave_width);
-        let mut tick = self.wave.start.div_ceil(step).saturating_mul(step);
-        for _ in 0..128 {
-            if tick > self.wave.end {
-                break;
-            }
-            let x = self.overview_column(tick);
-            let label = self.wave.timescale.format(tick);
-            if label.width() <= usize::from(canvas.width.saturating_sub(x))
-                && (!fit
-                    || x > l.wave_x + start.width() as u16 + 1
-                        && x + label.width() as u16 + 1 < end_x)
-            {
-                canvas.text(
-                    x,
-                    ruler_y,
-                    label.width() as u16,
-                    &label,
-                    "muted",
-                    "panel",
-                    false,
-                );
-            }
-            let next = tick.saturating_add(step);
-            if next <= tick {
-                break;
-            }
-            tick = next;
-        }
-        if fit {
-            canvas.text(
-                l.wave_x,
-                ruler_y,
-                start.width() as u16,
-                &start,
-                "text",
-                "panel",
-                false,
-            );
-            canvas.text(
-                end_x,
-                ruler_y,
-                end.width() as u16,
-                &end,
-                "text",
-                "panel",
-                false,
-            );
-        }
-        canvas.text(
-            l.browser + 1,
-            y,
-            (l.name + l.value).saturating_sub(1),
-            &ellipsize(
-                "Time navigator",
-                (l.name + l.value).saturating_sub(1) as usize,
-            ),
-            "muted",
-            "",
-            false,
-        );
-        let first = self.overview_column(self.session.start);
-        let last = self.overview_column(self.session.start.saturating_add(self.session.span));
+        let first = self.overview_column(self.view_start());
+        let last = self.overview_column(self.view_end());
         for x in l.wave_x..l.wave_x + l.wave_width {
             let selected = x >= first && x <= last;
             canvas.text(
@@ -2199,6 +2191,44 @@ fn wrap_value(text: &str, width: usize, count: usize) -> Vec<String> {
         lines.push(line);
     }
     lines
+}
+
+/// In an estimated row an edge's column is rounded, so changes less than two
+/// cells apart would beat irregularly (a steady clock looking unstable).
+/// Show such stretches as one uniform activity band instead; edges with
+/// room around them stay as edges.
+fn summarize_crowded_edges(samples: &mut [Sample]) {
+    let busy: Vec<usize> = samples
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.activity != Activity::Stable)
+        .map(|(i, _)| i)
+        .collect();
+    for pair in busy.windows(2) {
+        if pair[1] - pair[0] <= 2 {
+            for sample in &mut samples[pair[0]..=pair[1]] {
+                if sample.activity != Activity::Unresolved {
+                    sample.activity = Activity::Mixed;
+                }
+            }
+        }
+    }
+}
+
+/// A 1/2/5 tick step that is also a whole number of cells.
+pub fn ruler_step(cell: u64, span: u64, width: u16) -> u64 {
+    let mut step = tick_step(span, width);
+    for _ in 0..12 {
+        if step.is_multiple_of(cell) {
+            return step;
+        }
+        step = tick_step(
+            step.saturating_add(1)
+                .saturating_mul(u64::from((width / 15).max(1))),
+            width,
+        );
+    }
+    cell.saturating_mul(tick_step(span / cell.max(1), width))
 }
 
 pub fn tick_step(span: u64, width: u16) -> u64 {

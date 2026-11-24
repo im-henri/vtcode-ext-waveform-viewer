@@ -12,6 +12,8 @@ fn viewer() -> Viewer {
     v.ready(vcd::parse(include_bytes!("../examples/demo.vcd")).unwrap());
     v.width = 160;
     v.height = 44;
+    // As after a real resize: whole cells for this width.
+    v.clamp_window();
     v
 }
 fn lines(v: &Viewer) -> Vec<String> {
@@ -63,7 +65,7 @@ fn workbench_opens_with_readable_traces_and_a_large_waveform_pane() {
     for menu in MainMenu::ALL {
         assert!(frame[0].contains(menu.name()));
     }
-    assert!(frame.iter().any(|line| line.contains("Full scale")));
+    assert!(frame.iter().any(|line| line.contains("Recording 0 ns")));
     assert!(
         v.render()
             .pointer_buttons
@@ -159,6 +161,7 @@ fn middle_button_drags_b_and_editing_b_never_changes_a() {
     v.session.cursor = 11;
     v.session.snap = false;
     let l = v.layout();
+    let span = v.session.span;
     for (kind, dx) in [("down", 10), ("drag", 20), ("up", 30)] {
         v.event(Event {
             kind: kind.into(),
@@ -172,7 +175,7 @@ fn middle_button_drags_b_and_editing_b_never_changes_a() {
     }
     assert_eq!(v.session.cursor, 11);
     assert_eq!(v.session.alt_cursor, Some(v.time_at(l.wave_x + 30)));
-    assert_eq!(v.session.span, 1000);
+    assert_eq!(v.session.span, span);
     let readout = &lines(&v)[2];
     let x = readout[..readout.find("[B ").unwrap()].chars().count() as u16 + 1;
     pointer(&mut v, "down", x, 2);
@@ -204,7 +207,7 @@ fn double_clicking_a_compressed_cell_resolves_it_without_moving_b() {
         view_row: l.body_y,
         ..Event::default()
     });
-    assert!(v.session.span < 20);
+    assert_eq!(v.cell_ticks(), 1);
     assert_eq!((v.session.cursor, v.session.alt_cursor), (a, Some(31)));
     assert!(!lines(&v)[usize::from(l.body_y)].contains('▒'));
 }
@@ -222,6 +225,6 @@ fn detail_zoom_makes_bus_values_readable_as_well_as_digital_edges() {
         .skip(usize::from(l.wave_x))
         .collect();
     assert!(plot.contains(&value), "{value}: {plot}");
-    assert!(lines(&v)[0].contains("Detail"));
+    assert!(lines(&v)[0].contains("Exact"));
     assert!(v.session.span < 200);
 }

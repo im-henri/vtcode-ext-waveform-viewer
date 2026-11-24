@@ -331,6 +331,8 @@ pub struct Viewer {
     pub hover: Option<Hover>,
     pub(crate) detail_stop: Option<(u64, u64, u16)>,
     pub(crate) view_history: Vec<(u64, u64)>,
+    /// Per-trace exact time grid (see scale.rs), computed once per recording.
+    pub(crate) grids: Vec<u64>,
     pub history: Vec<Session>,
     pub redo: Vec<Session>,
     pub save_requested: bool,
@@ -397,6 +399,7 @@ impl Viewer {
             hover: None,
             detail_stop: None,
             view_history: Vec::new(),
+            grids: Vec::new(),
             history: vec![],
             redo: vec![],
             save_requested: false,
@@ -427,6 +430,7 @@ impl Viewer {
         self.control_drag = None;
         self.signal_drag = None;
         self.wave = wave;
+        self.compute_grids();
         self.signal_index = self
             .wave
             .signals
@@ -460,6 +464,7 @@ impl Viewer {
                 let watch = self.new_watch(signal, 0);
                 self.session.watches.push(watch);
             }
+            self.initial_view();
         }
         self.rebuild_browser();
         self.status = format!(
@@ -514,38 +519,49 @@ impl Viewer {
             body_height: self
                 .height
                 .min(200)
-                .saturating_sub(9 + self.inspector_height()),
+                .saturating_sub(8 + self.inspector_height()),
         }
     }
     pub fn fit(&mut self) {
-        if (self.session.start, self.session.span)
-            != (
-                self.wave.start,
-                self.wave.end.saturating_sub(self.wave.start).max(1),
-            )
-        {
+        let whole = (
+            self.wave.start,
+            self.wave.end.saturating_sub(self.wave.start).max(1),
+        );
+        if (self.session.start, self.session.span) != whole {
             self.remember_view();
         }
         self.detail_stop = None;
-        self.session.start = self.wave.start;
-        self.session.span = self.wave.end.saturating_sub(self.wave.start).max(1);
-        self.status =
-            "Entire recording · Shaded cells show activity · Detail inspects cursor A".into();
+        (self.session.start, self.session.span) = whole;
+        self.clamp_window();
+        self.status = if self.preview_scale() {
+            format!(
+                "Entire recording · ≈ preview: tinted rows are estimates · exact up to {} / cell · + zooms in",
+                self.wave.timescale.format(self.exact_limit().unwrap_or(1))
+            )
+        } else {
+            "Entire recording · exact: every edge is on its own cell boundary".into()
+        };
     }
     pub fn clamp_window(&mut self) {
         let duration = self.wave.end.saturating_sub(self.wave.start).max(1);
-        self.session.span = self.session.span.clamp(1, duration);
-        self.session.start = self.session.start.clamp(
-            self.wave.start,
-            self.wave
-                .end
-                .saturating_sub(self.session.span)
-                .max(self.wave.start),
-        );
+        if self.layout().wave_width >= 2 {
+            self.snap_window();
+        } else {
+            self.session.span = self.session.span.clamp(1, duration);
+            self.session.start = self.session.start.clamp(
+                self.wave.start,
+                self.wave
+                    .end
+                    .saturating_sub(self.session.span)
+                    .max(self.wave.start),
+            );
+        }
         if self.view_history.last() == Some(&(self.session.start, self.session.span)) {
             self.view_history.pop();
         }
     }
+    /// Right boundary of a cell. Cells span whole ticks, so every row maps a
+    /// given time to the same column.
     pub fn time_at(&self, column: u16) -> u64 {
         let l = self.layout();
         if l.wave_width == 1 {
@@ -558,71 +574,61 @@ impl Viewer {
         let x = column
             .saturating_sub(l.wave_x)
             .min(l.wave_width.saturating_sub(1));
-        self.session
-            .start
-            .saturating_add(
-                ((u128::from(self.session.span) * u128::from(x))
-                    / u128::from(l.wave_width.saturating_sub(1).max(1))) as u64,
-            )
+        self.view_start()
+            .saturating_add(self.cell_ticks().saturating_mul(u64::from(x)))
             .min(self.wave.end)
     }
+    /// The cell whose (left, right] interval contains `time`.
     pub fn column_at(&self, time: u64) -> Option<u16> {
         let l = self.layout();
-        if time < self.session.start || time > self.session.start.saturating_add(self.session.span)
-        {
+        if l.wave_width == 1 {
+            return (time >= self.session.start
+                && time <= self.session.start.saturating_add(self.session.span))
+            .then_some(l.wave_x);
+        }
+        let start = self.view_start();
+        if time < start || time > self.view_end() {
             return None;
         }
-        Some(
-            l.wave_x
-                + ((u128::from(time - self.session.start)
-                    * u128::from(l.wave_width.saturating_sub(1)))
-                .div_ceil(u128::from(self.session.span.max(1)))) as u16,
-        )
+        Some(l.wave_x + (time - start).div_ceil(self.cell_ticks()) as u16)
     }
     pub fn zoom(&mut self, inward: bool, anchor: u64) {
         self.remember_view();
-        let old = self.session.span;
-        let previous_stop = self.detail_stop.take();
-        let continue_overview =
-            !inward && previous_stop == Some((self.session.start, old, self.layout().wave_width));
-        let mut new = if inward {
-            old.div_ceil(2).max(1)
-        } else {
-            old.saturating_mul(2)
-        };
-        let limit = self.detail_limit();
-        let mut stopped = false;
-        if let Some(limit) = limit
-            && !continue_overview
-            && old < limit
-            && new > limit
-        {
-            new = limit;
-            stopped = true;
+        self.detail_stop = None;
+        let old = self.cell_ticks();
+        let limit = self.exact_limit();
+        let new = self.zoom_step(inward).min(self.fit_ticks()).max(1);
+        if new == old {
+            self.status = if inward {
+                "Maximum zoom · one cell is one time unit".into()
+            } else {
+                "Whole recording is visible · Fit shows it all".into()
+            };
+            return;
         }
-        let duration = self.wave.end.saturating_sub(self.wave.start).max(1);
-        new = new.min(duration);
-        let relative = anchor.saturating_sub(self.session.start).min(old);
-        self.session.span = new;
-        self.session.start = anchor.saturating_sub(
-            ((u128::from(relative) * u128::from(new)) / u128::from(old.max(1))) as u64,
-        );
+        let columns = self.wave_columns();
+        let start = self.view_start();
+        let relative = anchor
+            .saturating_sub(start)
+            .min(old.saturating_mul(columns));
+        // Keep the anchor time over the same column.
+        let column = relative / old;
+        self.session.span = new.saturating_mul(columns);
+        self.session.start = anchor.saturating_sub(column.saturating_mul(new));
         self.clamp_window();
-        if stopped || !inward && limit == Some(self.session.span) {
-            self.detail_stop = Some((
-                self.session.start,
-                self.session.span,
-                self.layout().wave_width,
-            ));
-            self.status =
-                "Terminal detail limit · − again continues into activity overview · i inspects A"
-                    .into();
-        } else {
-            self.status = format!(
-                "Zoomed {} · Hover + i inspects a cell · Detail inspects cursor A",
+        let scale = self.wave.timescale.format(new);
+        self.status = match limit {
+            Some(limit) if !inward && new == limit => format!(
+                "Exact limit · {scale} / cell · every edge sits on a cell boundary · − again for a tinted preview"
+            ),
+            Some(limit) if new > limit => format!(
+                "≈ Preview · {scale} / cell · tinted rows are estimates · + returns to exact"
+            ),
+            _ => format!(
+                "Zoomed {} · {scale} / cell · exact",
                 if inward { "in" } else { "out" }
-            );
-        }
+            ),
+        };
     }
     pub fn pan(&mut self, right: bool) {
         let step = (self.session.span / 5).max(1);

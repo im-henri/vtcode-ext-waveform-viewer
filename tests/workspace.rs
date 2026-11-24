@@ -10,6 +10,8 @@ fn viewer() -> Viewer {
     v.height = 38;
     v.selection = 1;
     v.session.inspector = true;
+    // As after a real resize: whole cells for this width.
+    v.clamp_window();
     v
 }
 fn lines(v: &Viewer) -> Vec<String> {
@@ -22,7 +24,7 @@ fn lines(v: &Viewer) -> Vec<String> {
 fn dock(v: &Viewer) -> String {
     lines(v)
         .into_iter()
-        .skip(usize::from(v.height - 8))
+        .skip(usize::from(v.height - 7))
         .take(4)
         .collect::<Vec<_>>()
         .join("\n")
@@ -42,7 +44,7 @@ fn docked_edge_inspection_preserves_full_values_and_keeps_the_waveforms_clear() 
     v.session.cursor = 11;
     v.session.alt_cursor = Some(31);
     assert_eq!(v.inspector_height(), 4);
-    assert_eq!(v.layout().body_y + v.layout().body_height, v.height - 8);
+    assert_eq!(v.layout().body_y + v.layout().body_height, v.height - 7);
     let text = dock(&v);
     assert!(text.contains("INSPECT  top.data"), "{text}");
     assert!(text.contains("Before HEX  dead_beef"), "{text}");
@@ -135,7 +137,9 @@ fn zoom_history_restores_exact_windows_and_keeps_measurement_cursors() {
     v.zoom(true, 11);
     let zoomed = (v.session.start, v.session.span);
     v.action("fit_cursors");
-    assert_eq!((v.session.start, v.session.span), (11, 20));
+    // Whole exact cells around both cursors, with a small margin.
+    assert!(v.column_at(11).is_some() && v.column_at(31).is_some());
+    assert!(v.cell_ticks() == 1 && !v.preview_scale());
     v.event(Event {
         code: "char".into(),
         text: "Z".into(),

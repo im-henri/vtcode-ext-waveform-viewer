@@ -10,7 +10,7 @@ impl Viewer {
         if height == 0 {
             return;
         }
-        let y = canvas.height - 4 - height;
+        let y = canvas.height - 3 - height;
         for offset in 0..height {
             canvas.fill(0, y + offset, canvas.width, "text", "panel");
         }

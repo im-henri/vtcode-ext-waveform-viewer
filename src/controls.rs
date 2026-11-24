@@ -22,6 +22,9 @@ pub enum ControlDrag {
         displayed: u16,
         names: u16,
         values: u16,
+        /// The time window before the drag; the wave area's width changes
+        /// with the column, which refits the window (see keep_cell_size).
+        window: (u64, u64),
     },
     Scroll {
         pane: ScrollPane,
@@ -98,10 +101,10 @@ impl Viewer {
     pub(crate) fn window_readout(&self) -> String {
         format!(
             "│   {} → {}   │   ",
-            self.wave.timescale.format(self.session.start),
+            self.wave.timescale.format(self.view_start()),
             self.wave
                 .timescale
-                .format(self.session.start.saturating_add(self.session.span))
+                .format(self.view_end().min(self.wave.end))
         )
     }
 
@@ -266,6 +269,7 @@ impl Viewer {
                 },
                 names: self.session.name_width,
                 values: self.session.value_width,
+                window: (self.session.start, self.session.span),
             });
             return true;
         }
@@ -283,6 +287,7 @@ impl Viewer {
                 displayed,
                 names,
                 values,
+                window,
             } => {
                 let requested =
                     i32::from(displayed) + i32::from(event.view_column) - i32::from(press);
@@ -308,6 +313,7 @@ impl Viewer {
                     let mut before = self.session.clone();
                     before.name_width = names;
                     before.value_width = values;
+                    (before.start, before.span) = window;
                     self.checkpoint_session(before);
                     self.status = "Column width updated · Ctrl+Z to undo · Right-click its header to auto-fit".into();
                 }
@@ -377,9 +383,15 @@ impl Viewer {
             return false;
         };
         match drag {
-            ControlDrag::Column { names, values, .. } => {
+            ControlDrag::Column {
+                names,
+                values,
+                window,
+                ..
+            } => {
                 self.session.name_width = names;
                 self.session.value_width = values;
+                (self.session.start, self.session.span) = window;
             }
             ControlDrag::Scroll { pane, original, .. } => self.set_scroll(pane, original),
             ControlDrag::Cursor { alt, original, .. } => {
@@ -450,6 +462,17 @@ impl Viewer {
                 .is_some_and(|(x, width)| hover.x >= x && hover.x < x + width)
         {
             return Some("Edge snapping · Click to toggle · s".into());
+        }
+        if hover.y == 0
+            && self
+                .scale_badge()
+                .is_some_and(|(_, x, width)| hover.x >= x && hover.x < x + width)
+        {
+            return Some(if self.preview_scale() {
+                "≈ Preview: cells are coarser than the signals' time grid, so tinted rows are estimates · Click for the exact limit".into()
+            } else {
+                "Exact: every transition sits on a cell boundary, intervals are drawn at true length · Click for the widest exact view".into()
+            });
         }
         if hover.y == 3
             && let Some(h) = self

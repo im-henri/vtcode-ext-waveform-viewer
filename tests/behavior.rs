@@ -240,12 +240,14 @@ fn integer_zoom_pan_and_mapping_stay_in_bounds() {
     for _ in 0..20 {
         v.zoom(true, 240);
     }
-    assert_eq!(v.session.span, 1);
+    assert_eq!(v.cell_ticks(), 1);
+    assert_eq!(v.session.span, v.wave_columns());
     v.session.start = 0;
     for _ in 0..20 {
         v.zoom(false, 0);
     }
-    assert_eq!(v.session.span, 1000);
+    assert_eq!(v.cell_ticks(), v.fit_ticks());
+    assert!(v.view_start() <= v.wave.start && v.view_end() >= v.wave.end);
     for _ in 0..20 {
         v.pan(true);
     }
@@ -253,10 +255,15 @@ fn integer_zoom_pan_and_mapping_stay_in_bounds() {
     v.session.span = 100;
     v.session.start = 900;
     v.pan(true);
-    assert_eq!(v.session.start, 900);
+    // Whole cells: the window starts on a cell boundary and still ends at the
+    // final recorded time.
     let l = v.layout();
-    assert_eq!(v.time_at(l.wave_x), 900);
+    assert_eq!(v.time_at(l.wave_x), v.session.start);
+    assert_eq!(v.session.start % v.cell_ticks(), 0);
     assert_eq!(v.time_at(l.wave_x + l.wave_width - 1), 1000);
+    let start = v.session.start;
+    v.pan(true);
+    assert_eq!(v.session.start, start);
 }
 #[test]
 fn next_previous_and_polarity_edges_and_alt_cursor_are_correct() {
@@ -374,6 +381,9 @@ fn shift_wheel_pans_like_horizontal_wheel_without_scrolling_signals_or_moving_cu
     v.session.browser = true;
     v.height = 16;
     v.session.span = 400;
+    v.clamp_window();
+    let span = v.session.span;
+    let cell = v.cell_ticks();
     v.session.cursor = 240;
     v.session.alt_cursor = Some(420);
     v.scroll = 1;
@@ -385,7 +395,10 @@ fn shift_wheel_pans_like_horizontal_wheel_without_scrolling_signals_or_moving_cu
             ("horizontal", false),
             ("horizontal", true),
         ] {
-            for (direction, expected) in [(-1, 220), (1, 380)] {
+            for (direction, expected) in [
+                (-1, (300 - span / 5) / cell * cell),
+                (1, (300 + span / 5) / cell * cell),
+            ] {
                 v.session.start = 300;
                 v.event(Event {
                     direction,
@@ -395,13 +408,16 @@ fn shift_wheel_pans_like_horizontal_wheel_without_scrolling_signals_or_moving_cu
                     view_row: l.body_y,
                     ..Event::default()
                 });
-                assert_eq!((v.session.start, v.session.span), (expected, 400));
+                assert_eq!((v.session.start, v.session.span), (expected, span));
                 assert_eq!((v.scroll, v.browser_scroll), (1, 1));
                 assert_eq!((v.session.cursor, v.session.alt_cursor), (240, Some(420)));
             }
         }
     }
-    for (start, direction) in [(0, -1), (600, 1)] {
+    v.session.start = u64::MAX / 2;
+    v.clamp_window();
+    let last = v.session.start;
+    for (start, direction) in [(0, -1), (last, 1)] {
         v.session.start = start;
         v.event(Event {
             direction,
@@ -433,7 +449,8 @@ fn shift_wheel_pans_like_horizontal_wheel_without_scrolling_signals_or_moving_cu
         ..Event::default()
     });
     assert_eq!(
-        v.session.span, 200,
+        v.cell_ticks(),
+        cell / 2,
         "Ctrl+wheel still zooms when Shift is held"
     );
 }
@@ -441,6 +458,7 @@ fn shift_wheel_pans_like_horizontal_wheel_without_scrolling_signals_or_moving_cu
 #[test]
 fn cursor_mouse_zoom_modifier_scroll_and_range_zoom_are_consistent() {
     let mut v = viewer();
+    v.fit();
     let l = v.layout();
     let x = l.wave_x + l.wave_width / 2;
     v.event(Event {
@@ -457,7 +475,9 @@ fn cursor_mouse_zoom_modifier_scroll_and_range_zoom_are_consistent() {
         view_column: x,
         ..Event::default()
     });
-    assert_eq!(v.session.span, 500);
+    // Fit is a preview (13 ns cells); zooming in leaves the preview exactly at
+    // the demo's 10 ns grid, the widest view where every edge is placed exactly.
+    assert_eq!(v.cell_ticks(), 10);
     v.event(Event {
         direction: 1,
         axis: "horizontal".into(),

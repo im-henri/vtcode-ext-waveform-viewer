@@ -12,6 +12,7 @@ pub mod model;
 mod navigation;
 pub mod render;
 pub mod sampling;
+pub mod scale;
 pub mod selection;
 pub mod vcd;
 pub mod viewer;

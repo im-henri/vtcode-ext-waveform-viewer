@@ -12,6 +12,8 @@ fn demo() -> Viewer {
     v.session.browser = true;
     v.width = 180;
     v.height = 120;
+    // As after a real resize: whole cells for this width.
+    v.clamp_window();
     v
 }
 fn row(watch: usize, bit: Option<u32>) -> RowKey {

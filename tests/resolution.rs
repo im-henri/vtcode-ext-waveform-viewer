@@ -14,6 +14,8 @@ fn viewer(declaration: &str, body: &str) -> Viewer {
     v.session.browser = false;
     v.session.name_width = 12;
     v.session.snap = false;
+    // As after a real resize: whole cells for this width.
+    v.clamp_window();
     v
 }
 fn lines(v: &Viewer) -> Vec<String> {
@@ -89,8 +91,8 @@ fn off_grid_pulses_are_shaded_once_in_their_own_cell_in_every_display() {
             }
         }
         let frame = lines(&v).join("\n");
-        assert!(frame.contains("Overview"));
-        assert!(frame.contains("multiple values"));
+        assert!(frame.contains("≈ Preview"), "{frame}");
+        assert!(frame.contains("estimates"), "{frame}");
     }
 }
 
@@ -130,7 +132,8 @@ fn extreme_bit_density_is_explicitly_unresolved_instead_of_a_false_level() {
     }
     v.session.span = 10000;
     assert!(timeline(&v, 0).contains('░'));
-    assert!(lines(&v).join("\n").contains("unresolved"));
+    let frame = lines(&v).join("\n");
+    assert!(frame.contains("unresolved"), "{frame}");
     v.session.span = 100;
     assert!(!timeline(&v, 0).contains('░'));
     assert!(!timeline(&v, 0).contains('▒'));
@@ -185,23 +188,32 @@ fn value_column_always_reports_a_while_hover_and_copy_inspect_the_pointer() {
 }
 
 #[test]
-fn zoom_out_stops_at_detail_limit_then_continues_and_fit_always_works() {
+fn zoom_out_stops_at_the_exact_limit_then_continues_and_fit_always_works() {
     let mut v = viewer(
         "$var wire 1 ! clk $end",
         "#0 0! #10 1! #20 0! #30 1! #40 0! #10000",
     );
     v.session.start = 0;
-    v.session.span = 250;
-    let limit = v.detail_limit().unwrap();
-    assert!(limit > 250 && limit < 500);
+    v.session.span = 1;
+    v.clamp_window();
+    assert_eq!(v.exact_limit(), Some(10));
+    // Every step up to the limit is exact: a divisor of the 10-tick grid.
+    while v.cell_ticks() < 10 {
+        v.zoom(false, 0);
+        assert!(10 % v.cell_ticks() == 0 && !v.preview_scale());
+    }
+    assert!(v.status.contains("Exact limit"), "{}", v.status);
+    let exact = timeline(&v, 0);
+    assert!(!exact.contains('▒'), "{exact}");
+    // Soft lock: the next step continues into a labelled preview.
     v.zoom(false, 0);
-    assert_eq!(v.session.span, limit);
-    assert!(v.status.contains("Terminal detail limit"));
-    v.zoom(false, 0);
-    assert_eq!(v.session.span, limit * 2);
-    assert!(!v.status.contains("Terminal detail limit"));
+    assert_eq!(v.cell_ticks(), 20);
+    assert!(v.preview_scale() && v.status.contains("Preview"));
+    // Zooming back in leaves the preview exactly at the limit.
+    v.zoom(true, 0);
+    assert_eq!(v.cell_ticks(), 10);
     v.fit();
-    assert_eq!(v.session.span, 10000);
+    assert!(v.view_start() <= v.wave.start && v.view_end() >= v.wave.end);
     assert!(timeline(&v, 0).contains('▒'));
     v.session.cursor = 20;
     let history = v.history.len();
@@ -262,7 +274,9 @@ fn large_integer_timestamps_keep_exact_cursor_values_and_cell_ownership() {
     v.session.span = u64::from(v.layout().wave_width - 1) * 10;
     v.session.cursor = time;
     let x = v.column_at(time).unwrap();
-    assert_eq!(v.cell_range(x), (time - 1, time + 9));
+    // Cells are whole ticks on boundaries counted from the recording start.
+    let (left, right) = v.cell_range(x);
+    assert!(left < time && time <= right && right - left == 10 && left % 10 == 0);
     assert!(values(&v)[0].contains('1'));
 }
 
@@ -300,8 +314,8 @@ fn hover_drill_down_reveals_the_hidden_pulse_without_changing_cursors() {
         text: "i".into(),
         ..Event::default()
     });
-    assert_eq!(v.session.start, range.0);
-    assert_eq!(v.session.span, range.1 - range.0);
+    // The inspected cell fills the view (whole cells, so it may be a little wider).
+    assert!(v.view_start() <= range.0 && v.view_end() >= range.1);
     assert!(
         v.hover.is_some(),
         "stationary pointer inspection survives zoom"
@@ -312,7 +326,7 @@ fn hover_drill_down_reveals_the_hidden_pulse_without_changing_cursors() {
         text: "i".into(),
         ..Event::default()
     });
-    assert_eq!(v.session.span, second_range.1 - second_range.0);
+    assert!(v.view_start() <= second_range.0 && v.view_end() >= second_range.1);
     assert!(v.column_at(11).is_some());
     assert!(v.column_at(12).is_some());
     assert_eq!(v.session.cursor, 800000);
@@ -436,6 +450,7 @@ fn before_after_preserves_x_z_and_does_not_invent_edges_on_unchanged_bits() {
 #[test]
 fn a_single_terminal_column_summarizes_the_whole_window() {
     let mut v = viewer("$var wire 1 ! signal $end", "#0 0! #11 1! #1000");
+    v.fit();
     let width = (1..100)
         .find(|width| {
             v.width = *width;

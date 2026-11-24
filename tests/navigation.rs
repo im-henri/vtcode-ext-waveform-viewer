@@ -13,6 +13,8 @@ fn demo() -> Viewer {
     v.height = 24;
     v.session.cursor = 240;
     v.session.alt_cursor = Some(420);
+    // As after a real resize: whole cells for this width.
+    v.clamp_window();
     v
 }
 fn pointer(v: &mut Viewer, kind: &str, x: u16, y: u16, shift: bool) {
@@ -55,6 +57,7 @@ fn range_zoom_previews_both_directions_without_applying_until_release() {
         let mut v = demo();
         v.session.start = 100;
         v.session.span = 600;
+        v.clamp_window();
         let l = v.layout();
         let (first, last) = if reverse {
             (l.wave_x + 45, l.wave_x + 10)
@@ -72,7 +75,10 @@ fn range_zoom_previews_both_directions_without_applying_until_release() {
         assert_eq!(background(&v, l.wave_x + 27, l.body_y + 12), "selection");
         assert_eq!(v.drag.unwrap().end_x, last);
         pointer(&mut v, "up", last, l.body_y + 2, true);
-        assert_eq!((v.session.start, v.session.span), (a.min(b), a.abs_diff(b)));
+        // Whole cells: the finest exact scale that still shows the whole range.
+        assert!(v.column_at(a).is_some() && v.column_at(b).is_some());
+        assert!(v.session.span < 600);
+        assert!(!v.preview_scale());
         assert_eq!((v.session.cursor, v.session.alt_cursor), (240, Some(420)));
         assert!(v.drag.is_none() && v.history.is_empty());
     }
@@ -83,6 +89,7 @@ fn range_cancel_and_ctrl_shift_name_resize_leave_time_unchanged() {
     let mut v = demo();
     v.session.start = 100;
     v.session.span = 600;
+    v.clamp_window();
     let original = v.session.clone();
     let l = v.layout();
     for cancel in ["escape", "resize", "cancel"] {
@@ -102,12 +109,13 @@ fn range_cancel_and_ctrl_shift_name_resize_leave_time_unchanged() {
     let split = l.browser + l.name - 1;
     pointer(&mut v, "down", split, l.body_y, true);
     pointer(&mut v, "drag", split + 5, l.body_y, true);
+    let cell = v.cell_ticks();
     pointer(&mut v, "up", split + 5, l.body_y, true);
-    assert_eq!(
-        (v.session.start, v.session.span),
-        (original.start, original.span)
-    );
+    // Narrower waves keep the same start and cell size; less time fits.
+    assert_eq!(v.session.start, original.start);
+    assert_eq!(v.cell_ticks(), cell);
     assert_ne!(v.session.name_width, original.name_width);
+    let original = v.session.clone();
     let l = v.layout();
     v.event(Event {
         kind: "down".into(),
@@ -130,7 +138,11 @@ fn overview_drag_preserves_grab_offset_clamps_and_can_be_cancelled() {
     let mut v = demo();
     v.session.start = 200;
     v.session.span = 300;
+    v.clamp_window();
     let original = v.session.clone();
+    let (span, cell) = (v.session.span, v.cell_ticks());
+    // The latest whole-cell start that still shows the final recorded time.
+    let last = (1000 - span).div_ceil(cell) * cell;
     let l = v.layout();
     let y = v.height - 3;
     let grab = l.wave_x + l.wave_width / 3;
@@ -142,7 +154,7 @@ fn overview_drag_preserves_grab_offset_clamps_and_can_be_cancelled() {
     pointer(&mut v, "drag", grab + 10, y, false);
     let expected = 200 + 1000 * u64::from(grab + 10 - l.wave_x) / u64::from(l.wave_width - 1)
         - 1000 * u64::from(grab - l.wave_x) / u64::from(l.wave_width - 1);
-    assert_eq!(v.session.start, expected);
+    assert_eq!(v.session.start, expected / cell * cell);
     let outside = v.height + 8;
     let right = v.width - 1;
     pointer(&mut v, "up", grab + 10, outside, false);
@@ -151,7 +163,7 @@ fn overview_drag_preserves_grab_offset_clamps_and_can_be_cancelled() {
     for cancel in ["escape", "resize", "cancel"] {
         pointer(&mut v, "down", l.wave_x, y, false);
         pointer(&mut v, "drag", right, y, false);
-        assert_eq!(v.session.start, 700);
+        assert_eq!(v.session.start, last);
         if cancel == "escape" {
             key(&mut v, "escape");
         } else {
@@ -162,10 +174,10 @@ fn overview_drag_preserves_grab_offset_clamps_and_can_be_cancelled() {
         }
         assert_eq!(v.session, committed);
     }
-    for (x, expected) in [(l.wave_x, 0), (v.width - 1, 700)] {
+    for (x, expected) in [(l.wave_x, 0), (v.width - 1, last)] {
         pointer(&mut v, "down", x, y, false);
         pointer(&mut v, "up", x, y, false);
-        assert_eq!((v.session.start, v.session.span), (expected, 300));
+        assert_eq!((v.session.start, v.session.span), (expected, span));
         assert_eq!((v.session.cursor, v.session.alt_cursor), (240, Some(420)));
     }
     assert!(v.history.is_empty());
@@ -386,6 +398,7 @@ fn empty_filters_can_be_cleared_and_overflow_is_visible_without_extra_rows() {
 #[test]
 fn unavailable_toolbar_controls_are_dimmed_and_do_not_apply() {
     let mut v = demo();
+    v.fit();
     let out = v
         .toolbar()
         .into_iter()

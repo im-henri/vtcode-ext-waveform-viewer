@@ -10,6 +10,8 @@ fn demo() -> Viewer {
     v.session.browser = true;
     v.width = 150;
     v.height = 32;
+    // As after a real resize: whole cells for this width.
+    v.clamp_window();
     v
 }
 fn lines(v: &Viewer) -> Vec<String> {

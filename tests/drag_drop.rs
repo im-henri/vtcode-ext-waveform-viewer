@@ -25,6 +25,8 @@ fn viewer(names: &[&str]) -> Viewer {
     v.rebuild_browser();
     v.session.cursor = 240;
     v.session.alt_cursor = Some(420);
+    // As after a real resize: whole cells for this width.
+    v.clamp_window();
     v
 }
 
@@ -213,6 +215,7 @@ fn cancelled_drags_leave_session_and_undo_history_untouched() {
     for cancel in ["escape", "outside", "browser", "header", "cancel", "resize"] {
         let mut v = viewer(&["clk", "reset_n"]);
         let original = v.session.clone();
+        let cell = v.cell_ticks();
         let l = v.layout();
         press(&mut v, "ex_reg_wdata");
         pointer(&mut v, "drag", l.wave_x + 8, l.body_y);
@@ -238,7 +241,16 @@ fn cancelled_drags_leave_session_and_undo_history_untouched() {
             }),
             _ => pointer(&mut v, "cancel", 0, 0),
         }
-        assert_eq!(v.session, original, "{cancel}");
+        if cancel == "resize" {
+            // A resize keeps the cell size (so an exact view stays exact) and
+            // only changes how much time fits; nothing else in the session moves.
+            let mut session = v.session.clone();
+            assert_eq!(v.cell_ticks(), cell, "{cancel}");
+            (session.start, session.span) = (original.start, original.span);
+            assert_eq!(session, original, "{cancel}");
+        } else {
+            assert_eq!(v.session, original, "{cancel}");
+        }
         assert!(v.history.is_empty(), "{cancel}");
         assert!(v.signal_drag.is_none(), "{cancel}");
         assert!(!v.needs_drag_tick());
@@ -324,8 +336,10 @@ fn held_drag_autoscrolls_to_the_last_slot_and_wheel_does_not_pan_time() {
     let mut v = viewer(&["clk"; 20]);
     v.height = 24;
     v.session.span = 400;
+    v.clamp_window();
     let l = v.layout();
     let window = (v.session.start, v.session.span);
+    let cell = v.cell_ticks();
     press(&mut v, "ex_reg_wdata");
     pointer(&mut v, "drag", l.wave_x + 8, l.body_y + l.body_height - 1);
     assert!(v.needs_drag_tick());
@@ -350,7 +364,10 @@ fn held_drag_autoscrolls_to_the_last_slot_and_wheel_does_not_pan_time() {
         view_row: l.body_y + l.body_height - 1,
         ..Event::default()
     });
-    assert_eq!((v.session.start, v.session.span), (80, 400));
+    assert_eq!(
+        (v.session.start, v.session.span),
+        ((window.0 + window.1 / 5) / cell * cell, window.1)
+    );
     assert_eq!(v.scroll, scroll);
     assert_eq!(v.signal_drag.as_ref().unwrap().target, target);
     for _ in 0..1000 {

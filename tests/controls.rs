@@ -15,6 +15,8 @@ fn demo() -> Viewer {
     v.session.cursor = 241;
     v.session.alt_cursor = Some(421);
     v.session.snap = false;
+    // As after a real resize: whole cells for this width.
+    v.clamp_window();
     v
 }
 fn pointer(v: &mut Viewer, kind: &str, x: u16, y: u16) {
@@ -169,6 +171,7 @@ fn value_auto_fit_respects_full_formatted_values_and_saved_widths_migrate() {
     let mut v = Viewer::new("wide.vcd".into(), None);
     v.ready(vcd::parse(b"$scope module top $end $var wire 128 ! payload [127:0] $end $upscope $end $enddefinitions $end #0 b11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111 ! #100").unwrap());
     v.width = 180;
+    v.clamp_window();
     pointer(&mut v, "contextMenu", 44, 3);
     menu(&mut v, MenuAction::FitValues);
     assert!(
@@ -209,6 +212,7 @@ fn name_auto_fit_reserves_room_for_the_bus_format_badge() {
 #[test]
 fn cursor_handles_are_separate_at_coincident_times_and_viewport_edges() {
     let mut v = demo();
+    v.fit();
     for time in [0, 241, v.wave.end] {
         v.session.cursor = time;
         v.session.alt_cursor = Some(time);

@@ -13,6 +13,8 @@ fn demo() -> Viewer {
     v.session.browser = true;
     v.width = 150;
     v.height = 32;
+    // As after a real resize: whole cells for this width.
+    v.clamp_window();
     v
 }
 fn key(v: &mut Viewer, code: &str) {
@@ -524,7 +526,10 @@ fn popups_remain_within_tiny_resized_views_and_menu_scroll_reaches_every_action(
         assert!(line.width() <= 16);
     }
     key(&mut v, "escape");
-    assert_eq!(v.session, before);
+    // Resizing keeps the cell size; only the amount of visible time changes.
+    let mut session = v.session.clone();
+    (session.start, session.span) = (before.start, before.span);
+    assert_eq!(session, before);
 }
 
 #[test]
