@@ -38,7 +38,7 @@ use the floating inspector to retain space for the waveform.
 Use a VTCode build with GitHub release-package installation support.
 Run **Extensions: Install Extension from GitHub** in the command palette,
 paste `https://github.com/im-henri/vtcode-ext-waveform-viewer`, and select
-`v0.2.1`. VTCode downloads the runtime ZIP attached to the release, not the Git repository.
+`v0.3.0`. VTCode downloads the runtime ZIP attached to the release, not the Git repository.
 
 To build from source, clone this repository and install into a VTCode workspace:
 
@@ -469,7 +469,7 @@ Keep `extension.json`, `Cargo.toml`, and `Cargo.lock` versions identical. Build
 and test the extension, then run:
 
 ```sh
-python package.py --tag v0.2.1 --output dist/vtcode-extension.zip
+python package.py --tag v0.3.0 --output dist/vtcode-extension.zip
 ```
 
 `package-files.json` explicitly lists the manifest, prebuilt Wasm, documentation,
